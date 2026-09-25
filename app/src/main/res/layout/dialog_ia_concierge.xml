@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="#FFFFFF">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="🤖 SPBus AI Concierge"
+        android:textSize="20sp"
+        android:textStyle="bold"
+        android:textColor="#1F1F1F" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Tire suas dúvidas sobre linhas, integrações, horários de pico e regras do Bilhete Único em tempo real."
+        android:textSize="13sp"
+        android:textColor="#616161"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="16dp" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+
+        <EditText
+            android:id="@+id/campoPerguntaIA"
+            android:layout_width="0dp"
+            android:layout_height="50dp"
+            android:layout_weight="1"
+            android:hint="Ex: Como funciona a integração de ônibus com metrô?"
+            android:padding="12dp"
+            android:textSize="14sp"
+            android:background="@android:drawable/editbox_background" />
+
+        <ImageButton
+            android:id="@+id/btnPerguntarIA"
+            android:layout_width="50dp"
+            android:layout_height="50dp"
+            android:layout_marginStart="8dp"
+            android:background="#E65100"
+            android:src="@android:drawable/ic_menu_send" />
+    </LinearLayout>
+
+    <ProgressBar
+        android:id="@+id/pbCarregandoIA"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:visibility="gone"
+        android:layout_marginTop="16dp" />
+
+    <TextView
+        android:id="@+id/tvRespostaIA"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:background="#F5F5F5"
+        android:padding="16dp"
+        android:text="Olá! Como posso ajudar na sua viagem hoje?"
+        android:textColor="#212121"
+        android:textSize="14sp" />
+</LinearLayout>

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:background="#FFFFFF">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="📢 Relato Colaborativo em Tempo Real"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="#1F1F1F" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Ajude outros passageiros informando a situação da linha ou do ponto:"
+        android:textSize="13sp"
+        android:textColor="#616161"
+        android:layout_marginTop="4dp"
+        android:layout_marginBottom="12dp" />
+
+    <RadioGroup
+        android:id="@+id/rgOpcoesRelato"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content">
+
+        <RadioButton
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🚌 Ônibus muito lotado" />
+
+        <RadioButton
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⏱️ Atraso excessivo / Demora na linha" />
+
+        <RadioButton
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="❄️ Ar-condicionado quebrado" />
+
+        <RadioButton
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="⚠️ Trânsito intenso no percurso" />
+    </RadioGroup>
+
+    <EditText
+        android:id="@+id/campoObsRelato"
+        android:layout_width="match_parent"
+        android:layout_height="80dp"
+        android:hint="Observações adicionais (opcional)"
+        android:gravity="top|start"
+        android:padding="8dp"
+        android:layout_marginTop="12dp"
+        android:background="@android:drawable/editbox_background"
+        android:textSize="13sp" />
+
+    <Button
+        android:id="@+id/btnEnviarRelato"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Enviar Relato em Tempo Real"
+        android:backgroundTint="#E65100"
+        android:textColor="#FFFFFF"
+        android:layout_marginTop="16dp" />
+</LinearLayout>
