@@ -1,3 +1,12 @@
+import java.util.Properties
+
+val spbusSecrets = Properties().apply {
+    rootProject.file("secrets.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+}
+
+fun spbusSecret(name: String): String = spbusSecrets.getProperty(name, "").trim()
+fun buildConfigString(value: String): String = "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
 plugins {
     alias(libs.plugins.android.application)
 }
@@ -16,6 +25,11 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        buildConfigField("String", "SUPABASE_URL", buildConfigString(spbusSecret("SUPABASE_URL")))
+        buildConfigField("String", "SUPABASE_ANON_KEY", buildConfigString(spbusSecret("SUPABASE_ANON_KEY")))
+        buildConfigField("String", "GEMINI_API_KEY", buildConfigString(spbusSecret("GEMINI_API_KEY")))
+        buildConfigField("String", "THINGSPEAK_CHANNEL_ID", buildConfigString(spbusSecret("THINGSPEAK_CHANNEL_ID")))
+        buildConfigField("String", "THINGSPEAK_READ_API_KEY", buildConfigString(spbusSecret("THINGSPEAK_READ_API_KEY")))
     }
 
     buildTypes {
@@ -28,6 +42,9 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
+    }
+    buildFeatures {
+        buildConfig = true
     }
 }
 

@@ -215,6 +215,16 @@
             android:layout_marginBottom="8dp" />
 
         <com.google.android.material.floatingactionbutton.FloatingActionButton
+            android:id="@+id/fabIoT"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:src="@android:drawable/ic_menu_info_details"
+            android:contentDescription="Abrir telemetria da frota"
+            app:backgroundTint="#278B72"
+            app:tint="#FFFFFF"
+            android:layout_marginBottom="8dp" />
+
+        <com.google.android.material.floatingactionbutton.FloatingActionButton
             android:id="@+id/fabIA"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

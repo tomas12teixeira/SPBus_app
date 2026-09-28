@@ -23,6 +23,7 @@ import android.util.Log
 import android.view.View
 import android.view.ViewGroup
 import android.widget.*
+import android.webkit.WebView
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -32,6 +33,15 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.textfield.TextInputLayout
+import com.example.spbus.data.BusPosition
+import com.example.spbus.data.BusStopRecord
+import com.example.spbus.data.FleetTelemetry
+import com.example.spbus.data.GeminiService
+import com.example.spbus.data.PassengerFeedback
+import com.example.spbus.data.SupabaseRealtimeClient
+import com.example.spbus.data.SupabaseRealtimeListener
+import com.example.spbus.data.SupabaseTransitRepository
+import com.example.spbus.data.ThingSpeakService
 import okhttp3.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -61,6 +71,9 @@ MainActivity : AppCompatActivity(), SensorEventListener {
 
     private val LOCATION_PERMISSION_REQ_CODE = 1001
     private val client: OkHttpClient by lazy { OkHttpClient() }
+    private val transitRepository by lazy { SupabaseTransitRepository() }
+    private val geminiService by lazy { GeminiService() }
+    private val thingSpeakService by lazy { ThingSpeakService() }
     private val handler = Handler(Looper.getMainLooper())
     private var runnableOrigem: Runnable? = null
     private var runnableDestino: Runnable? = null
@@ -72,6 +85,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var botaoTracejar: Button
     private lateinit var fabLocalizacao: FloatingActionButton
     private lateinit var fabIA: FloatingActionButton
+    private lateinit var fabIoT: FloatingActionButton
     private lateinit var fabReportar: FloatingActionButton
     private lateinit var btnZoomIn: MaterialButton
     private lateinit var btnZoomOut: MaterialButton
@@ -153,6 +167,11 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     )
 
     private val listaRotas = mutableListOf<RotaMultimodal>()
+    private val onibusAoVivo = linkedMapOf<String, BusPosition>()
+    private var paradasOnibusAoVivo: List<BusStopRecord> = emptyList()
+    private val marcadoresOnibus = linkedMapOf<String, Marker>()
+    private val feedbacksRemotos = mutableListOf<PassengerFeedback>()
+    private var realtimeClient: SupabaseRealtimeClient? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -170,6 +189,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         textoStatus = findViewById(R.id.textoStatus)
         containerOpcoesRotas = findViewById(R.id.containerOpcoesRotas)
         fabIA = findViewById(R.id.fabIA)
+        fabIoT = findViewById(R.id.fabIoT)
         fabReportar = findViewById(R.id.fabReportar)
         btnZoomIn = findViewById(R.id.btnZoomIn)
         btnZoomOut = findViewById(R.id.btnZoomOut)
@@ -266,6 +286,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         }
 
         fabIA.setOnClickListener { abrirAssistenteIANativo() }
+        fabIoT.setOnClickListener { abrirPainelTelemetria() }
         fabReportar.setOnClickListener { abrirModalNovoFeedbackPassageiro() }
         cardFeedbacksRota.setOnClickListener { abrirModalMuralFeedbacks() }
 
@@ -799,33 +820,46 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         val origBairro = extrairBairroOuRua(enderecoOrigemNome)
         val destBairro = extrairBairroOuRua(enderecoDestinoNome)
 
-        val linhasDinamicas = listOf(
-            Triple(7010, "7010-10", "$origBairro / $destBairro"),
-            Triple(8015, "8015-10", "$origBairro / Term. $destBairro"),
-            Triple(5110, "5110-10", "Expressa: $origBairro / $destBairro")
-        )
+        val paradasNoCorredor = paradasOnibusAoVivo.mapNotNull { parada ->
+            val point = GeoPoint(parada.latitude, parada.longitude)
+            val distance = trechoOnibus.minOfOrNull { it.distanceToAsDouble(point) } ?: Double.MAX_VALUE
+            if (distance <= 500.0) parada to point else null
+        }
+        val linhasComParadas = paradasNoCorredor
+            .flatMap { (parada, _) -> parada.lines.map { it to parada } }
+            .groupBy({ it.first }, { it.second })
+            .filter { (line, stops) -> line.isNotBlank() && stops.distinctBy { it.id }.size >= 2 }
+        val linhasDinamicas = linhasComParadas.keys.sorted().take(3).map { lineCode ->
+            Triple(lineCode.hashCode(), lineCode, "Paradas cadastradas · $origBairro / $destBairro")
+        }.ifEmpty {
+            listOf(Triple(0, "DEMO", "Sem dados GTFS suficientes para este corredor"))
+        }
 
-        val geocoder = Geocoder(this, Locale("pt", "BR"))
-        val listaParadasReais = mutableListOf<ParadaOnibus>()
-        val passo = (trechoOnibus.size / 5).coerceAtLeast(1)
-        var numParada = 1
-
-        for (pIndex in trechoOnibus.indices step passo) {
-            val pt = trechoOnibus[pIndex]
-            var nomeRuaReal = "Via Principal - Parada $numParada"
-
-            try {
-                val enderecos = geocoder.getFromLocation(pt.latitude, pt.longitude, 1)
-                if (!enderecos.isNullOrEmpty()) {
-                    val rua = enderecos[0].thoroughfare ?: enderecos[0].featureName
-                    if (!rua.isNullOrEmpty()) nomeRuaReal = rua
-                }
-            } catch (e: Exception) {
-                Log.w("Paradas", "Erro no geocoder")
+        val listaParadasReais = if (paradasNoCorredor.isNotEmpty()) {
+            paradasNoCorredor.mapIndexed { index, (parada, point) ->
+                ParadaOnibus(index + 1, parada.name, "Ponto cadastrado no Supabase", point)
             }
-
-            listaParadasReais.add(ParadaOnibus(numParada, "Parada $numParada", nomeRuaReal, pt))
-            numParada++
+        } else {
+            val geocoder = Geocoder(this, Locale("pt", "BR"))
+            val lista = mutableListOf<ParadaOnibus>()
+            val passo = (trechoOnibus.size / 5).coerceAtLeast(1)
+            var numParada = 1
+            for (pIndex in trechoOnibus.indices step passo) {
+                val pt = trechoOnibus[pIndex]
+                var nomeRuaReal = "Parada estimada $numParada"
+                try {
+                    val enderecos = geocoder.getFromLocation(pt.latitude, pt.longitude, 1)
+                    if (!enderecos.isNullOrEmpty()) {
+                        val rua = enderecos[0].thoroughfare ?: enderecos[0].featureName
+                        if (!rua.isNullOrEmpty()) nomeRuaReal = rua
+                    }
+                } catch (e: Exception) {
+                    Log.w("Paradas", "Erro no geocoder")
+                }
+                lista.add(ParadaOnibus(numParada, "Parada estimada $numParada", nomeRuaReal, pt))
+                numParada++
+            }
+            lista
         }
 
         for ((i, linha) in linhasDinamicas.withIndex()) {
@@ -990,6 +1024,9 @@ MainActivity : AppCompatActivity(), SensorEventListener {
             adicionarMarcador(parada.ponto, "🏣 ${parada.nome}", parada.endereco)
         }
 
+        marcadoresOnibus.clear()
+        onibusAoVivo.values.forEach(::atualizarMarcadorOnibus)
+
         if (feedbacksDoTrajeto.isNotEmpty()) {
             cardFeedbacksRota.visibility = View.VISIBLE
             textoFeedbacksPassageiros.text = feedbacksDoTrajeto.first()
@@ -1117,26 +1154,118 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun abrirAssistenteIANativo() {
-        Toast.makeText(this, "🤖 IA SPBus: Trajeto monitorado em tempo real!", Toast.LENGTH_LONG).show()
+        val content = layoutInflater.inflate(R.layout.dialog_ia_concierge, null)
+        val input = content.findViewById<EditText>(R.id.campoPerguntaIA)
+        val sendButton = content.findViewById<ImageButton>(R.id.btnPerguntarIA)
+        val progress = content.findViewById<ProgressBar>(R.id.pbCarregandoIA)
+        val answer = content.findViewById<TextView>(R.id.tvRespostaIA)
+        val dialog = AlertDialog.Builder(this)
+            .setView(content)
+            .setNegativeButton("Fechar", null)
+            .create()
+
+        sendButton.setOnClickListener {
+            val question = input.text.toString().trim()
+            if (question.isBlank()) {
+                input.error = "Digite sua pergunta"
+                return@setOnClickListener
+            }
+            sendButton.isEnabled = false
+            progress.visibility = View.VISIBLE
+            answer.text = "Consultando o assistente..."
+            geminiService.ask(question, feedbacksRemotos.toList()) { reply, error ->
+                runOnUiThread {
+                    if (isFinishing || isDestroyed) return@runOnUiThread
+                    progress.visibility = View.GONE
+                    sendButton.isEnabled = true
+                    answer.text = reply ?: error ?: "O assistente não retornou uma resposta."
+                }
+            }
+        }
+        dialog.show()
+    }
+
+    private fun abrirPainelTelemetria() {
+        val content = layoutInflater.inflate(R.layout.dialog_telemetria_iot, null)
+        val status = content.findViewById<TextView>(R.id.tvStatusThingSpeak)
+        val occupancy = content.findViewById<TextView>(R.id.tvLotacao)
+        val occupancyProgress = content.findViewById<com.google.android.material.progressindicator.LinearProgressIndicator>(R.id.progressoLotacao)
+        val speed = content.findViewById<TextView>(R.id.tvVelocidadeFrota)
+        val temperature = content.findViewById<TextView>(R.id.tvTemperaturaFrota)
+        val chart = content.findViewById<WebView>(R.id.webViewThingSpeak)
+        val refresh = content.findViewById<MaterialButton>(R.id.btnAtualizarThingSpeak)
+        chart.settings.javaScriptEnabled = true
+        chart.settings.domStorageEnabled = true
+        chart.settings.allowFileAccess = false
+        chart.settings.allowContentAccess = false
+        chart.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        val channelId = BuildConfig.THINGSPEAK_CHANNEL_ID.trim()
+        if (channelId.isNotBlank()) {
+            val safeChannelId = android.text.TextUtils.htmlEncode(channelId)
+            val html = """<html><meta name="viewport" content="width=device-width, initial-scale=1"><body style="margin:0;background:#f1f4f2;font-family:sans-serif">${(1..3).joinToString("") { field -> "<iframe title=\"Sensor $field\" style=\"width:100%;height:260px;border:0;margin:4px 0\" src=\"https://thingspeak.com/channels/$safeChannelId/charts/$field?dynamic=true&results=40&type=line\"></iframe>" }}</body></html>"""
+            chart.loadDataWithBaseURL("https://thingspeak.com/", html, "text/html", "UTF-8", null)
+        } else {
+            chart.loadDataWithBaseURL(null, "<html><body style='font-family:sans-serif;padding:20px'>Configure THINGSPEAK_CHANNEL_ID para carregar os gráficos.</body></html>", "text/html", "UTF-8", null)
+        }
+
+        val dialog = BottomSheetDialog(this)
+        dialog.setContentView(content)
+        refresh.setOnClickListener { carregarTelemetria(status, occupancy, occupancyProgress, speed, temperature) }
+        dialog.setOnShowListener { carregarTelemetria(status, occupancy, occupancyProgress, speed, temperature) }
+        dialog.show()
+    }
+
+    private fun carregarTelemetria(
+        status: TextView,
+        occupancy: TextView,
+        progress: com.google.android.material.progressindicator.LinearProgressIndicator,
+        speed: TextView,
+        temperature: TextView
+    ) {
+        status.text = "Atualizando leituras do ThingSpeak..."
+        thingSpeakService.loadTelemetry { telemetry, error ->
+            runOnUiThread {
+                val latest = telemetry?.readings?.lastOrNull()
+                occupancy.text = latest?.occupancy?.let { "${it.coerceIn(0.0, 100.0).toInt()}%" } ?: "--%"
+                progress.setProgressCompat(latest?.occupancy?.toInt()?.coerceIn(0, 100) ?: 0, true)
+                speed.text = latest?.speedKmh?.let { "${"%.0f".format(Locale("pt", "BR"), it)} km/h" } ?: "-- km/h"
+                temperature.text = latest?.temperatureCelsius?.let { "${"%.1f".format(Locale("pt", "BR"), it)} °C" } ?: "-- °C"
+                status.text = when {
+                    error != null -> error
+                    latest == null -> "Canal conectado, aguardando leituras dos campos 1, 2 e 3."
+                    else -> "Canal ${telemetry?.channelId} · ${latest.createdAt}"
+                }
+            }
+        }
     }
 
     private fun abrirModalNovoFeedbackPassageiro() {
-        val builder = AlertDialog.Builder(this)
-        builder.setTitle("📢 Enviar Feedback da Viagem")
-        val input = EditText(this)
-        input.hint = "Digite seu comentário..."
-        builder.setView(input)
-        builder.setPositiveButton("Enviar") { _, _ ->
-            val texto = input.text.toString()
-            if (texto.isNotEmpty()) {
-                feedbacksDoTrajeto.add(0, "👤 Você: '$texto'")
-                cardFeedbacksRota.visibility = View.VISIBLE
-                textoFeedbacksPassageiros.text = feedbacksDoTrajeto.first()
-                Toast.makeText(this, "Feedback registrado!", Toast.LENGTH_SHORT).show()
+        val content = layoutInflater.inflate(R.layout.dialog_relato_colaborativo, null)
+        val options = content.findViewById<RadioGroup>(R.id.rgOpcoesRelato)
+        val comment = content.findViewById<EditText>(R.id.campoObsRelato)
+        val send = content.findViewById<Button>(R.id.btnEnviarRelato)
+        val dialog = AlertDialog.Builder(this).setView(content).setNegativeButton("Cancelar", null).create()
+        send.setOnClickListener {
+            val selected = options.checkedRadioButtonId.takeIf { it != -1 }
+                ?.let { content.findViewById<RadioButton>(it)?.text?.toString() }
+                ?.let(::normalizarStatusRelato) ?: "Outro"
+            val description = comment.text.toString().trim().ifBlank { selected }
+            val line = rotaEmAndamento?.numeroLinha ?: "Não informada"
+            send.isEnabled = false
+            transitRepository.submitFeedback(line, selected, description) { error ->
+                runOnUiThread {
+                    send.isEnabled = true
+                    if (error == null) {
+                        registrarFeedbackLocal("$line · $selected: $description")
+                        Toast.makeText(this, "Relato enviado para a comunidade.", Toast.LENGTH_SHORT).show()
+                        dialog.dismiss()
+                    } else {
+                        Toast.makeText(this, error, Toast.LENGTH_LONG).show()
+                    }
+                }
             }
         }
-        builder.setNegativeButton("Cancelar", null)
-        builder.show()
+        dialog.show()
     }
 
     private fun abrirModalMuralFeedbacks() {
@@ -1157,6 +1286,96 @@ MainActivity : AppCompatActivity(), SensorEventListener {
             ),
             LOCATION_PERMISSION_REQ_CODE
         )
+    }
+
+    private fun normalizarStatusRelato(texto: String): String = when {
+        texto.contains("lotado", ignoreCase = true) -> "Lotado"
+        texto.contains("atraso", ignoreCase = true) || texto.contains("demora", ignoreCase = true) -> "Atrasado"
+        texto.contains("ar-condicionado", ignoreCase = true) -> "Outro"
+        texto.contains("trânsito", ignoreCase = true) -> "Atrasado"
+        else -> "Outro"
+    }
+
+    private fun registrarFeedbackLocal(texto: String) {
+        feedbacksDoTrajeto.add(0, "👤 $texto")
+        while (feedbacksDoTrajeto.size > 8) feedbacksDoTrajeto.removeAt(feedbacksDoTrajeto.lastIndex)
+        cardFeedbacksRota.visibility = View.VISIBLE
+        textoFeedbacksPassageiros.text = feedbacksDoTrajeto.first()
+    }
+
+    private fun carregarDadosRemotos() {
+        if (!transitRepository.isConfigured) return
+        transitRepository.loadBuses { buses, error ->
+            runOnUiThread {
+                if (!error.isNullOrBlank()) Log.w("SPBus", "Falha ao carregar frota: $error")
+                if (buses.isNotEmpty()) {
+                    onibusAoVivo.clear()
+                    buses.forEach { onibusAoVivo[it.id] = it; atualizarMarcadorOnibus(it) }
+                    textoStatus.text = "Frota conectada · ${buses.size} veículos recebidos."
+                }
+            }
+        }
+        transitRepository.loadFeedback { feedbacks, error ->
+            runOnUiThread {
+                if (!error.isNullOrBlank()) Log.w("SPBus", "Falha ao carregar relatos: $error")
+                if (feedbacks.isNotEmpty()) aplicarFeedbacksRemotos(feedbacks)
+            }
+        }
+        transitRepository.loadBusStops { stops, error ->
+            if (!error.isNullOrBlank()) Log.w("SPBus", "Falha ao carregar pontos: $error")
+            runOnUiThread { paradasOnibusAoVivo = stops }
+            Log.i("SPBus", "${stops.size} pontos de ônibus carregados")
+        }
+    }
+
+    private fun aplicarFeedbacksRemotos(feedbacks: List<PassengerFeedback>) {
+        feedbacksRemotos.clear()
+        feedbacksRemotos.addAll(feedbacks)
+        feedbacksDoTrajeto.clear()
+        feedbacksDoTrajeto.addAll(feedbacks.map { "${it.lineCode} · ${it.status}: ${it.comment}" })
+        cardFeedbacksRota.visibility = if (feedbacksDoTrajeto.isEmpty()) View.GONE else View.VISIBLE
+        textoFeedbacksPassageiros.text = feedbacksDoTrajeto.firstOrNull().orEmpty()
+    }
+
+    private fun iniciarRealtime() {
+        if (!transitRepository.isConfigured || realtimeClient != null) return
+        realtimeClient = transitRepository.connectRealtime(object : SupabaseRealtimeListener {
+            override fun onBusChanged(bus: BusPosition?, deletedId: String?) {
+                if (deletedId != null) {
+                    onibusAoVivo.remove(deletedId)
+                    marcadoresOnibus.remove(deletedId)?.let(mapView.overlays::remove)
+                    mapView.invalidate()
+                }
+                bus?.let { onibusAoVivo[it.id] = it; atualizarMarcadorOnibus(it) }
+            }
+
+            override fun onFeedbackChanged(feedback: PassengerFeedback?, deletedId: String?) {
+                if (deletedId != null) feedbacksRemotos.removeAll { it.id == deletedId }
+                feedback?.let { item ->
+                    feedbacksRemotos.removeAll { it.id == item.id }
+                    feedbacksRemotos.add(0, item)
+                }
+                aplicarFeedbacksRemotos(feedbacksRemotos.take(20))
+            }
+
+            override fun onConnectionChanged(connected: Boolean) {
+                runOnUiThread {
+                    if (connected) textoStatus.text = "Frota e relatos conectados em tempo real."
+                }
+            }
+        })
+    }
+
+    private fun atualizarMarcadorOnibus(bus: BusPosition) {
+        val marker = marcadoresOnibus[bus.id] ?: Marker(mapView).also {
+            it.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
+            mapView.overlays.add(it)
+            marcadoresOnibus[bus.id] = it
+        }
+        marker.position = GeoPoint(bus.latitude, bus.longitude)
+        marker.title = "🚌 Linha ${bus.lineCode}"
+        marker.snippet = "${bus.speedKmh.toInt()} km/h · atualizado ${bus.updatedAt}"
+        mapView.invalidate()
     }
 
     override fun onRequestPermissionsResult(
@@ -1192,12 +1411,16 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     override fun onResume() {
         super.onResume()
         mapView.onResume()
+        carregarDadosRemotos()
+        iniciarRealtime()
         acelerometro?.let {
             sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
     }
 
     override fun onPause() {
+        realtimeClient?.close()
+        realtimeClient = null
         super.onPause()
         mapView.onPause()
         sensorManager.unregisterListener(this)
