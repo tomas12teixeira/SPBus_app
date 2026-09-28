@@ -22,6 +22,8 @@ import android.text.TextWatcher
 import android.util.Log
 import android.view.View
 import android.view.ViewGroup
+import android.view.Gravity
+import android.widget.FrameLayout
 import android.widget.*
 import android.webkit.WebView
 import androidx.appcompat.app.AlertDialog
@@ -87,6 +89,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var fabIA: FloatingActionButton
     private lateinit var fabIoT: FloatingActionButton
     private lateinit var fabReportar: FloatingActionButton
+    private lateinit var painelBusca: View
     private lateinit var btnZoomIn: MaterialButton
     private lateinit var btnZoomOut: MaterialButton
     private lateinit var fabTrocarMapa: FloatingActionButton
@@ -179,33 +182,15 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         Configuration.getInstance().userAgentValue = packageName
         Configuration.getInstance().load(applicationContext, getSharedPreferences("osmdroid", MODE_PRIVATE))
 
-        setContentView(R.layout.activity_main)
-
-        mapView = findViewById(R.id.mapView)
-        campoOrigem = findViewById(R.id.campoOrigem)
-        campoDestino = findViewById(R.id.campoDestino)
-        botaoTracejar = findViewById(R.id.botaoTracejar)
-        fabLocalizacao = findViewById(R.id.fabLocalizacao)
-        textoStatus = findViewById(R.id.textoStatus)
-        containerOpcoesRotas = findViewById(R.id.containerOpcoesRotas)
-        fabIA = findViewById(R.id.fabIA)
-        fabIoT = findViewById(R.id.fabIoT)
-        fabReportar = findViewById(R.id.fabReportar)
-        btnZoomIn = findViewById(R.id.btnZoomIn)
-        btnZoomOut = findViewById(R.id.btnZoomOut)
-        fabTrocarMapa = findViewById(R.id.fabTrocarMapa)
-        cardFeedbacksRota = findViewById(R.id.cardFeedbacksRota)
-        textoFeedbacksPassageiros = findViewById(R.id.textoFeedbacksPassageiros)
+        setContentView(criarInterfaceKotlin())
 
         mapView.visibility = View.GONE
 
         // Prepara o painel inicial dinamico para Recentes e Favoritos
         criarContainerPainelHome()
 
-        val inputLayoutOrigem = campoOrigem.parent?.parent as? TextInputLayout
-        inputLayoutOrigem?.setEndIconOnClickListener {
-            obterLocalizacaoGPSComFeedback()
-        }
+        val inputLayoutOrigem = campoOrigem.parent as? TextInputLayout
+        inputLayoutOrigem?.setEndIconOnClickListener { obterLocalizacaoGPSComFeedback() }
 
         criarBotaoEntreiNoOnibus()
 
@@ -278,7 +263,6 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         fabLocalizacao.setOnClickListener {
             emNavegacaoAtiva = false
 
-            val painelBusca = findViewById<View>(R.id.painelBusca)
             painelBusca?.visibility = View.VISIBLE
             containerOpcoesRotas.visibility = View.VISIBLE
 
@@ -292,6 +276,156 @@ MainActivity : AppCompatActivity(), SensorEventListener {
 
         // Carrega Recentes e Favoritos ao iniciar
         atualizarPainelHomeRecentesEFavoritos()
+    }
+
+    private fun criarInterfaceKotlin(): View {
+        fun dp(value: Int) = (value * resources.displayMetrics.density).toInt()
+
+        val root = FrameLayout(this).apply { setBackgroundColor(Color.rgb(241, 244, 242)) }
+        mapView = MapView(this).apply { visibility = View.GONE }
+        root.addView(mapView, FrameLayout.LayoutParams(-1, -1))
+
+        val scroll = ScrollView(this).apply {
+            isFillViewport = true
+            clipToPadding = false
+        }
+        painelBusca = scroll
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(22), dp(18), dp(96))
+        }
+        scroll.addView(content, ViewGroup.LayoutParams(-1, -2))
+        root.addView(scroll, FrameLayout.LayoutParams(-1, -1))
+
+        val title = TextView(this).apply {
+            text = "SPBus"
+            textSize = 25f
+            setTextColor(Color.rgb(17, 38, 46))
+            setTypeface(null, Typeface.BOLD)
+        }
+        content.addView(title)
+
+        textoStatus = TextView(this).apply {
+            text = "Mobilidade conectada · São Paulo"
+            textSize = 13f
+            setTextColor(Color.rgb(115, 132, 138))
+            setPadding(0, dp(3), 0, dp(16))
+        }
+        content.addView(textoStatus)
+
+        val searchCard = MaterialCardView(this).apply {
+            radius = dp(12).toFloat()
+            cardElevation = dp(2).toFloat()
+            setCardBackgroundColor(Color.WHITE)
+            strokeWidth = dp(1)
+            strokeColor = Color.rgb(225, 232, 229)
+        }
+        val searchFields = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(16), dp(16), dp(16))
+        }
+        fun addressInput(hintText: String, endIcon: Boolean = false): Pair<TextInputLayout, AutoCompleteTextView> {
+            val textInputLayout = TextInputLayout(this).apply {
+                hint = hintText
+                boxBackgroundMode = TextInputLayout.BOX_BACKGROUND_OUTLINE
+                setBoxCornerRadii(dp(8).toFloat(), dp(8).toFloat(), dp(8).toFloat(), dp(8).toFloat())
+                if (endIcon) {
+                    endIconMode = TextInputLayout.END_ICON_CUSTOM
+                    endIconDrawable = getDrawable(android.R.drawable.ic_menu_mylocation)
+                    endIconContentDescription = "Usar minha localização"
+                }
+            }
+            val input = AutoCompleteTextView(this).apply {
+                inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_POSTAL_ADDRESS
+                textSize = 15f
+                setPadding(dp(12), dp(14), dp(12), dp(14))
+                threshold = 1
+            }
+            textInputLayout.addView(input, ViewGroup.LayoutParams(-1, -2))
+            return textInputLayout to input
+        }
+
+        val (originLayout, originInput) = addressInput("Origem / ponto de partida", endIcon = true)
+        campoOrigem = originInput
+        searchFields.addView(originLayout, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(10) })
+        val (destinationLayout, destinationInput) = addressInput("Destino desejado")
+        campoDestino = destinationInput
+        searchFields.addView(destinationLayout, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = dp(14) })
+
+        botaoTracejar = MaterialButton(this).apply {
+            text = "Buscar melhores rotas"
+            textSize = 14f
+            isAllCaps = false
+            cornerRadius = dp(9)
+            setBackgroundColor(Color.rgb(23, 59, 77))
+            setTextColor(Color.WHITE)
+        }
+        searchFields.addView(botaoTracejar, LinearLayout.LayoutParams(-1, dp(50)))
+        searchCard.addView(searchFields)
+        content.addView(searchCard, LinearLayout.LayoutParams(-1, -2))
+
+        cardFeedbacksRota = MaterialCardView(this).apply {
+            visibility = View.GONE
+            radius = dp(9).toFloat()
+            cardElevation = dp(1).toFloat()
+            setCardBackgroundColor(Color.rgb(228, 243, 236))
+            setOnClickListener { abrirModalMuralFeedbacks() }
+        }
+        textoFeedbacksPassageiros = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.rgb(24, 50, 59))
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        cardFeedbacksRota.addView(textoFeedbacksPassageiros)
+        content.addView(cardFeedbacksRota, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+
+        containerOpcoesRotas = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(8), 0, 0)
+        }
+        content.addView(containerOpcoesRotas)
+
+        val controls = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER_HORIZONTAL
+        }
+        fun addMapButton(text: String, icon: Int, tint: Int, click: () -> Unit, mini: Boolean = false): FloatingActionButton {
+            val button = FloatingActionButton(this).apply {
+                setImageResource(icon)
+                contentDescription = text
+                backgroundTintList = android.content.res.ColorStateList.valueOf(tint)
+                imageTintList = android.content.res.ColorStateList.valueOf(if (tint == Color.WHITE) Color.rgb(23, 59, 77) else Color.WHITE)
+                size = if (mini) FloatingActionButton.SIZE_MINI else FloatingActionButton.SIZE_NORMAL
+                setOnClickListener { click() }
+            }
+            controls.addView(button, LinearLayout.LayoutParams(dp(if (mini) 42 else 50), dp(if (mini) 42 else 50)).apply { bottomMargin = dp(8) })
+            return button
+        }
+
+        btnZoomIn = MaterialButton(this).apply { text = "+"; textSize = 20f; setPadding(0, 0, 0, 0); setOnClickListener { mapView.controller.zoomIn() } }
+        btnZoomOut = MaterialButton(this).apply { text = "−"; textSize = 20f; setPadding(0, 0, 0, 0); setOnClickListener { mapView.controller.zoomOut() } }
+        controls.addView(btnZoomIn, LinearLayout.LayoutParams(dp(44), dp(44)).apply { bottomMargin = dp(6) })
+        controls.addView(btnZoomOut, LinearLayout.LayoutParams(dp(44), dp(44)).apply { bottomMargin = dp(6) })
+        fabTrocarMapa = addMapButton("Alternar mapa", android.R.drawable.ic_menu_mapmode, Color.WHITE, {
+            modoSatelite = !modoSatelite
+            mapView.setTileSource(if (modoSatelite) esriSatTileSource else TileSourceFactory.MAPNIK)
+            Toast.makeText(this, if (modoSatelite) "Mapa de satélite" else "Mapa de ruas", Toast.LENGTH_SHORT).show()
+            mapView.invalidate()
+        }, mini = true)
+        fabLocalizacao = addMapButton("Minha localização", android.R.drawable.ic_menu_mylocation, Color.rgb(23, 59, 77), {
+            emNavegacaoAtiva = false
+            painelBusca.visibility = View.VISIBLE
+            containerOpcoesRotas.visibility = View.VISIBLE
+            obterLocalizacaoGPSComFeedback()
+        })
+        fabIoT = addMapButton("Telemetria da frota", android.R.drawable.ic_menu_info_details, Color.rgb(39, 139, 114), { abrirPainelTelemetria() }, mini = true)
+        fabIA = addMapButton("Assistente SPBus", android.R.drawable.ic_dialog_info, Color.rgb(23, 59, 77), { abrirAssistenteIANativo() })
+        fabReportar = addMapButton("Enviar relato", android.R.drawable.ic_menu_edit, Color.rgb(227, 107, 84), { abrirModalNovoFeedbackPassageiro() })
+
+        root.addView(controls, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
+            setMargins(0, 0, dp(14), dp(14))
+        })
+        return root
     }
 
     private fun criarContainerPainelHome() {
@@ -1050,7 +1184,6 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         dentroDoOnibus = false
         rotaEmAndamento = rota
 
-        val painelBusca = findViewById<View>(R.id.painelBusca)
         painelBusca?.visibility = View.GONE
         containerOpcoesRotas.visibility = View.GONE
         containerPainelHome.visibility = View.GONE
@@ -1154,11 +1287,43 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun abrirAssistenteIANativo() {
-        val content = layoutInflater.inflate(R.layout.dialog_ia_concierge, null)
-        val input = content.findViewById<EditText>(R.id.campoPerguntaIA)
-        val sendButton = content.findViewById<ImageButton>(R.id.btnPerguntarIA)
-        val progress = content.findViewById<ProgressBar>(R.id.pbCarregandoIA)
-        val answer = content.findViewById<TextView>(R.id.tvRespostaIA)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(48, 40, 48, 24)
+        }
+        content.addView(TextView(this).apply {
+            text = "Assistente SPBus"
+            textSize = 20f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.rgb(24, 50, 59))
+        })
+        content.addView(TextView(this).apply {
+            text = "Pergunte sobre linhas, integrações e trajetos."
+            textSize = 13f
+            setTextColor(Color.rgb(115, 132, 138))
+            setPadding(0, 8, 0, 20)
+        })
+        val input = EditText(this).apply {
+            hint = "Como funciona a integração ônibus e metrô?"
+            minLines = 1
+            maxLines = 3
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
+        }
+        content.addView(input)
+        val sendButton = MaterialButton(this).apply {
+            text = "Perguntar"
+            isAllCaps = false
+        }
+        content.addView(sendButton)
+        val progress = ProgressBar(this).apply { visibility = View.GONE }
+        content.addView(progress)
+        val answer = TextView(this).apply {
+            text = "Olá! Como posso ajudar na sua viagem?"
+            textSize = 14f
+            setTextColor(Color.rgb(33, 40, 42))
+            setPadding(16, 16, 16, 16)
+        }
+        content.addView(answer)
         val dialog = AlertDialog.Builder(this)
             .setView(content)
             .setNegativeButton("Fechar", null)
@@ -1186,14 +1351,55 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun abrirPainelTelemetria() {
-        val content = layoutInflater.inflate(R.layout.dialog_telemetria_iot, null)
-        val status = content.findViewById<TextView>(R.id.tvStatusThingSpeak)
-        val occupancy = content.findViewById<TextView>(R.id.tvLotacao)
-        val occupancyProgress = content.findViewById<com.google.android.material.progressindicator.LinearProgressIndicator>(R.id.progressoLotacao)
-        val speed = content.findViewById<TextView>(R.id.tvVelocidadeFrota)
-        val temperature = content.findViewById<TextView>(R.id.tvTemperaturaFrota)
-        val chart = content.findViewById<WebView>(R.id.webViewThingSpeak)
-        val refresh = content.findViewById<MaterialButton>(R.id.btnAtualizarThingSpeak)
+        val content = ScrollView(this)
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 36, 40, 32)
+        }
+        content.addView(panel)
+        panel.addView(TextView(this).apply {
+            text = "Telemetria da frota"
+            textSize = 21f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.rgb(24, 50, 59))
+        })
+        val status = TextView(this).apply {
+            text = "Conectando ao ThingSpeak..."
+            textSize = 12f
+            setTextColor(Color.rgb(115, 132, 138))
+            setPadding(0, 6, 0, 12)
+        }
+        panel.addView(status)
+        val refresh = MaterialButton(this).apply { text = "Atualizar leituras"; isAllCaps = false }
+        panel.addView(refresh)
+        fun metric(label: String, value: String, color: Int): TextView {
+            panel.addView(TextView(this).apply {
+                text = label
+                textSize = 12f
+                setTextColor(Color.rgb(115, 132, 138))
+                setPadding(0, 18, 0, 2)
+            })
+            return TextView(this).apply {
+                text = value
+                textSize = 25f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(color)
+                panel.addView(this)
+            }
+        }
+        val occupancy = metric("Lotação estimada", "--%", Color.rgb(227, 107, 84))
+        val occupancyProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
+        panel.addView(occupancyProgress, LinearLayout.LayoutParams(-1, 12).apply { topMargin = 10 })
+        val speed = metric("Velocidade média da frota", "-- km/h", Color.rgb(39, 139, 114))
+        val temperature = metric("Temperatura interna", "-- °C", Color.rgb(183, 140, 32))
+        panel.addView(TextView(this).apply {
+            text = "Histórico dos sensores"
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.rgb(24, 50, 59))
+            setPadding(0, 24, 0, 8)
+        })
+        val chart = WebView(this)
         chart.settings.javaScriptEnabled = true
         chart.settings.domStorageEnabled = true
         chart.settings.allowFileAccess = false
@@ -1207,6 +1413,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         } else {
             chart.loadDataWithBaseURL(null, "<html><body style='font-family:sans-serif;padding:20px'>Configure THINGSPEAK_CHANNEL_ID para carregar os gráficos.</body></html>", "text/html", "UTF-8", null)
         }
+        panel.addView(chart, LinearLayout.LayoutParams(-1, 520))
 
         val dialog = BottomSheetDialog(this)
         dialog.setContentView(content)
@@ -1218,7 +1425,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     private fun carregarTelemetria(
         status: TextView,
         occupancy: TextView,
-        progress: com.google.android.material.progressindicator.LinearProgressIndicator,
+        progress: ProgressBar,
         speed: TextView,
         temperature: TextView
     ) {
@@ -1227,7 +1434,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
             runOnUiThread {
                 val latest = telemetry?.readings?.lastOrNull()
                 occupancy.text = latest?.occupancy?.let { "${it.coerceIn(0.0, 100.0).toInt()}%" } ?: "--%"
-                progress.setProgressCompat(latest?.occupancy?.toInt()?.coerceIn(0, 100) ?: 0, true)
+                progress.progress = latest?.occupancy?.toInt()?.coerceIn(0, 100) ?: 0
                 speed.text = latest?.speedKmh?.let { "${"%.0f".format(Locale("pt", "BR"), it)} km/h" } ?: "-- km/h"
                 temperature.text = latest?.temperatureCelsius?.let { "${"%.1f".format(Locale("pt", "BR"), it)} °C" } ?: "-- °C"
                 status.text = when {
@@ -1240,14 +1447,39 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private fun abrirModalNovoFeedbackPassageiro() {
-        val content = layoutInflater.inflate(R.layout.dialog_relato_colaborativo, null)
-        val options = content.findViewById<RadioGroup>(R.id.rgOpcoesRelato)
-        val comment = content.findViewById<EditText>(R.id.campoObsRelato)
-        val send = content.findViewById<Button>(R.id.btnEnviarRelato)
+        val content = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(40, 28, 40, 12)
+        }
+        content.addView(TextView(this).apply {
+            text = "Relato colaborativo"
+            textSize = 19f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.rgb(24, 50, 59))
+        })
+        content.addView(TextView(this).apply {
+            text = "Informe a situação da linha ou do ponto."
+            textSize = 13f
+            setTextColor(Color.rgb(115, 132, 138))
+            setPadding(0, 6, 0, 12)
+        })
+        val options = RadioGroup(this).apply { orientation = RadioGroup.VERTICAL }
+        val radioOptions = listOf("Ônibus muito lotado", "Atraso excessivo / demora", "Ar-condicionado quebrado", "Trânsito intenso")
+            .map { label -> RadioButton(this).apply { text = label; textSize = 13f; options.addView(this) } }
+        content.addView(options)
+        val comment = EditText(this).apply {
+            hint = "Observações adicionais (opcional)"
+            minLines = 2
+            maxLines = 4
+            gravity = Gravity.TOP or Gravity.START
+        }
+        content.addView(comment)
+        val send = MaterialButton(this).apply { text = "Enviar relato"; isAllCaps = false }
+        content.addView(send)
         val dialog = AlertDialog.Builder(this).setView(content).setNegativeButton("Cancelar", null).create()
         send.setOnClickListener {
-            val selected = options.checkedRadioButtonId.takeIf { it != -1 }
-                ?.let { content.findViewById<RadioButton>(it)?.text?.toString() }
+            val selected = radioOptions.firstOrNull { it.isChecked }
+                ?.text?.toString()
                 ?.let(::normalizarStatusRelato) ?: "Outro"
             val description = comment.text.toString().trim().ifBlank { selected }
             val line = rotaEmAndamento?.numeroLinha ?: "Não informada"

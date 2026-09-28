@@ -1,6 +1,6 @@
 # SPBus Android
 
-O módulo `app` é a aplicação Android nativa (Kotlin/XML). Abra a raiz `SPBus_app` no Android Studio e sincronize o projeto Gradle.
+O módulo `app` é uma aplicação Android nativa Kotlin. Toda a interface, inclusive diálogos e formulários, é construída em Kotlin; não há layouts em `res/layout`. O Android ainda exige `AndroidManifest.xml` e mantém temas/ícones em recursos XML. Abra a raiz `SPBus_app` no Android Studio e sincronize o projeto Gradle.
 
 ## Credenciais locais
 
