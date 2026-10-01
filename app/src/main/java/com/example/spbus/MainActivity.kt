@@ -4,7 +4,10 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
+import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path
 import android.graphics.Typeface
 import android.hardware.Sensor
 import android.hardware.SensorEvent
@@ -29,10 +32,9 @@ import android.widget.ScrollView
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
-import android.webkit.WebView
-import android.webkit.WebSettings
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.compose.setContent
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.example.spbus.data.FirebaseRouteStore
@@ -41,6 +43,7 @@ import com.example.spbus.data.ThingSpeakService
 import com.example.spbus.data.TransitRoute
 import com.example.spbus.data.TransitRouteFinder
 import com.example.spbus.data.WalkingDistanceTracker
+import com.example.spbus.ui.SpBusApp
 import com.google.android.material.textfield.TextInputLayout
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
@@ -51,6 +54,7 @@ import org.osmdroid.views.MapView
 import org.osmdroid.views.overlay.Marker
 import org.osmdroid.views.overlay.Polyline
 import java.util.Locale
+import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : AppCompatActivity(), SensorEventListener {
 
@@ -60,6 +64,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private val routeStore by lazy { FirebaseRouteStore(applicationContext) }
     private val thingSpeak by lazy { ThingSpeakService() }
     private lateinit var distanceTracker: WalkingDistanceTracker
+    private val distanceMetersFlow = MutableStateFlow(0)
     private lateinit var sensorManager: SensorManager
     private var stepCounter: Sensor? = null
     private var stepDetector: Sensor? = null
@@ -76,7 +81,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
     private var currentLocation: Location? = null
     private var locationListener: LocationListener? = null
     private var vehiclePoller: Runnable? = null
-    private var lastThingSpeakUpdate = 0L
     private var screenResumed = false
     private val vehicleMarkers = mutableListOf<Marker>()
 
@@ -87,13 +91,22 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         Configuration.getInstance().userAgentValue = packageName
         Configuration.getInstance().load(applicationContext, getSharedPreferences("osmdroid", MODE_PRIVATE))
         distanceTracker = WalkingDistanceTracker(this)
+        distanceMetersFlow.value = distanceTracker.distanceTodayMeters
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
         stepCounter = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
         stepDetector = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
-        setContentView(buildScreen())
-        configureStopSuggestions(originInput)
-        configureStopSuggestions(destinationInput)
+        setContent {
+            SpBusApp(
+                routeFinder = routeFinder,
+                spTrans = spTrans,
+                thingSpeak = thingSpeak,
+                routeStore = routeStore,
+                distanceMeters = distanceMetersFlow,
+                hasStepSensor = stepCounter != null || stepDetector != null,
+                onEnableStepTracking = { requestStepTrackingPermission() }
+            )
+        }
         loadSavedRoutes()
     }
 
@@ -112,7 +125,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         brand.addView(label("SPBus", 21, palette.ink, bold = true))
         brand.addView(label("SÃO PAULO  /  MOBILIDADE", 9, palette.muted, bold = true))
         header.addView(brand, LinearLayout.LayoutParams(0, -2, 1f))
-        distanceText = label("0 m a pe", 12, palette.primary, bold = true).apply {
+        distanceText = label("Ativar passos", 12, palette.primary, bold = true).apply {
             setPadding(dp(12), dp(8), dp(12), dp(8))
             setBackgroundColor(palette.softGreen)
             setOnClickListener { showDistancePanel() }
@@ -249,7 +262,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                     routeContainer.addView(emptyRoutesMessage(error))
                     return@runOnUiThread
                 }
-                statusText.text = "${routes.size} alternativa${if (routes.size == 1) "" else "s"} · estimativas baseadas nas paradas SPTrans"
+                statusText.text = "${routes.size} alternativa${if (routes.size == 1) "" else "s"} · selecione para consultar a previsão SPTrans"
                 renderRoutes(routes)
                 selectRoute(routes.first(), persistHistory = true)
             }
@@ -276,8 +289,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
                 setBackgroundColor(if (index == 0) palette.primary else palette.ink)
             }
             headline.addView(badge)
-            headline.addView(label("  ${route.estimatedMinutes} min", 18, palette.ink, bold = true), LinearLayout.LayoutParams(0, -2, 1f))
-            headline.addView(label("${route.stops.size} paradas", 11, palette.muted))
+            headline.addView(label("  ${route.stops.size} paradas", 12, palette.muted), LinearLayout.LayoutParams(0, -2, 1f))
             column.addView(headline)
             column.addView(label(route.line.destination.ifBlank { route.alightingStop.name }, 13, palette.ink, bold = true).apply {
                 setPadding(0, dp(9), 0, dp(3))
@@ -309,7 +321,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         spTrans.arrivals(route.boardingStop.code, route.line.code) { arrivals, _ ->
             val wait = arrivals?.firstOrNull()?.let(::minutesUntilArrival)
             runOnUiThread {
-                val waitLabel = wait?.let { "Próxima previsão: ${it} min" } ?: "Consulte o ponto para a previsão ao vivo"
+                val waitLabel = wait?.let { "Previsão SPTrans: ${it} min" } ?: "SPTrans sem previsão para este ponto agora"
                 statusText.text = "Linha ${route.line.number} · $waitLabel"
             }
         }
@@ -533,59 +545,109 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             setPadding(dp(24), dp(18), dp(24), dp(20))
         }
         content.addView(label("Caminhada de hoje", 18, palette.ink, bold = true))
-        val distance = label("${distanceTracker.distanceTodayMeters} m", 30, palette.primary, bold = true).apply {
+        content.addView(label("${distanceTracker.distanceTodayMeters} m", 30, palette.primary, bold = true).apply {
             setPadding(0, dp(8), 0, dp(4))
-        }
-        content.addView(distance)
-        val details = label(if (stepCounter != null || stepDetector != null) "Medição local pelo sensor de passos." else "Este aparelho não oferece sensor dedicado; usando acelerômetro quando disponível.", 12, palette.muted)
-        content.addView(details)
-        val trackingButton = MaterialButton(this).apply {
+        })
+        content.addView(label("Medição local pelo sensor de passos.", 12, palette.muted))
+        content.addView(MaterialButton(this).apply {
             text = "Ativar contagem de passos"
             isAllCaps = false
             setOnClickListener { requestStepTrackingPermission() }
+        })
+        val status = label("Consultando canal ThingSpeak...", 12, palette.muted).apply {
+            setPadding(0, dp(12), 0, dp(8))
         }
-        content.addView(trackingButton)
-        val syncStatus = label(if (thingSpeak.isConfigured) "Histórico sincronizado com ThingSpeak." else "Configure ThingSpeak para enviar o histórico de metros.", 12, palette.muted).apply {
-            setPadding(0, dp(8), 0, dp(10))
+        content.addView(status)
+        val fieldTitle = label("Campo do canal", 14, palette.ink, bold = true)
+        val chartContainer = FrameLayout(this)
+        val history = label("Sem leituras carregadas.", 11, palette.muted).apply {
+            setPadding(0, dp(8), 0, 0)
         }
-        content.addView(syncStatus)
-        val graph = WebView(this).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = false
-            settings.allowFileAccess = false
-            settings.allowContentAccess = false
-        }
-        val channelId = BuildConfig.THINGSPEAK_CHANNEL_ID.trim()
-        if (channelId.matches(Regex("[0-9]+"))) {
-            graph.loadUrl("https://thingspeak.com/channels/$channelId/charts/1?dynamic=true&results=48&type=line")
-            content.addView(graph, LinearLayout.LayoutParams(-1, dp(220)))
-        }
-        val sendButton = MaterialButton(this).apply {
-            text = "Sincronizar distância"
+        content.addView(fieldTitle)
+        content.addView(chartContainer, LinearLayout.LayoutParams(-1, dp(180)))
+        content.addView(history)
+        content.addView(MaterialButton(this).apply {
+            text = "Atualizar telemetria"
             isAllCaps = false
-            setOnClickListener {
-                sendDistanceToThingSpeak(force = true) { error ->
-                    runOnUiThread { syncStatus.text = error ?: "Distância atualizada no ThingSpeak." }
+            setOnClickListener { loadThingSpeakData(status, fieldTitle, chartContainer, history) }
+        })
+        AlertDialog.Builder(this).setView(content).setPositiveButton("Fechar", null).show()
+        loadThingSpeakData(status, fieldTitle, chartContainer, history)
+    }
+
+    private fun loadThingSpeakData(status: TextView, fieldTitle: TextView, chart: FrameLayout, history: TextView) {
+        status.text = "Consultando canal ThingSpeak..."
+        thingSpeak.loadChannelData { feed, error ->
+            runOnUiThread {
+                if (error != null || feed == null) {
+                    status.text = error ?: "Não foi possível ler o canal."
+                    fieldTitle.text = "Campo do canal"
+                    chart.removeAllViews()
+                    history.text = ""
+                    return@runOnUiThread
+                }
+                val field = feed.fields.firstOrNull()
+                status.text = "${feed.channelName} · canal ${feed.channelId} · ${feed.readings.size} registros"
+                if (field == null) {
+                    fieldTitle.text = "Nenhum campo configurado no canal."
+                    chart.removeAllViews()
+                    history.text = "Adicione e nomeie um campo no ThingSpeak para visualizar os dados."
+                    return@runOnUiThread
+                }
+                fieldTitle.text = "Field ${field.number} · ${field.label}"
+                val values = feed.readings.mapNotNull { it.fields[field.number]?.toFloat() }
+                chart.removeAllViews()
+                if (values.isEmpty()) {
+                    chart.visibility = View.GONE
+                    history.text = "${feed.readings.size} registros, mas sem valor numérico neste campo."
+                } else {
+                    chart.visibility = View.VISIBLE
+                    chart.addView(createTelemetryChart(values), FrameLayout.LayoutParams(-1, -1))
+                    val latest = feed.readings.lastOrNull()
+                    history.text = latest?.let { "Última leitura: ${it.fields[field.number]} · ${it.createdAt}" }.orEmpty()
                 }
             }
         }
-        content.addView(sendButton)
-        AlertDialog.Builder(this).setView(content).setPositiveButton("Fechar", null).show()
     }
 
-    private fun sendDistanceToThingSpeak(force: Boolean = false, callback: ((String?) -> Unit)? = null) {
-        if (!thingSpeak.isConfigured) {
-            callback?.invoke("Configure thingspeak.channel_id em local.properties.")
-            return
+    private fun createTelemetryChart(values: List<Float>): View = object : View(this) {
+        private val linePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.primary
+            strokeWidth = dp(2).toFloat()
+            style = Paint.Style.STROKE
         }
-        val now = System.currentTimeMillis()
-        if (!force && now - lastThingSpeakUpdate < THINGSPEAK_INTERVAL_MS) return
-        lastThingSpeakUpdate = now
-        thingSpeak.updateWalkingDistance(distanceTracker.distanceTodayMeters) { error -> callback?.invoke(error) }
+        private val gridPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.border
+            strokeWidth = dp(1).toFloat()
+        }
+        private val path = Path()
+
+        override fun onDraw(canvas: Canvas) {
+            super.onDraw(canvas)
+            val left = dp(8).toFloat()
+            val right = width - dp(8).toFloat()
+            val top = dp(12).toFloat()
+            val bottom = height - dp(12).toFloat()
+            repeat(4) { index ->
+                val y = top + (bottom - top) * index / 3f
+                canvas.drawLine(left, y, right, y, gridPaint)
+            }
+            if (values.isEmpty()) return
+            val minimum = values.minOrNull() ?: return
+            val maximum = values.maxOrNull() ?: return
+            val span = (maximum - minimum).takeIf { it > 0f } ?: 1f
+            path.reset()
+            values.forEachIndexed { index, value ->
+                val x = if (values.size == 1) (left + right) / 2 else left + (right - left) * index / (values.size - 1)
+                val y = bottom - (value - minimum) / span * (bottom - top)
+                if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            }
+            canvas.drawPath(path, linePaint)
+        }
     }
 
     private fun updateDistanceLabel() {
-        if (::distanceText.isInitialized) distanceText.text = "${distanceTracker.distanceTodayMeters} m a pe"
+        if (::distanceText.isInitialized) distanceText.text = "${distanceTracker.distanceTodayMeters} m a pé"
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
@@ -600,7 +662,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
             }
         }
         updateDistanceLabel()
-        sendDistanceToThingSpeak()
+        distanceMetersFlow.value = distanceTracker.distanceTodayMeters
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
@@ -611,7 +673,7 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         if (::mapView.isInitialized) mapView.onResume()
         registerStepSensorsIfAllowed()
         updateDistanceLabel()
-        sendDistanceToThingSpeak()
+        distanceMetersFlow.value = distanceTracker.distanceTodayMeters
         selectedRoute?.let(::startVehicleTracking)
     }
 
@@ -622,7 +684,6 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         locationListener = null
         if (::distanceTracker.isInitialized) {
             distanceTracker.persist()
-            sendDistanceToThingSpeak()
         }
         if (::mapView.isInitialized) mapView.onPause()
         if (::sensorManager.isInitialized) sensorManager.unregisterListener(this)
@@ -721,6 +782,5 @@ class MainActivity : AppCompatActivity(), SensorEventListener {
         private const val RECOGNITION_REQUEST = 2305
         private const val LOCATION_TIMEOUT_MS = 15_000L
         private const val VEHICLE_REFRESH_MS = 30_000L
-        private const val THINGSPEAK_INTERVAL_MS = 60_000L
     }
 }

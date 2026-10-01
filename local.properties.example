@@ -3,9 +3,5 @@
 sptrans.token=COLE_SEU_TOKEN_OLHO_VIVO
 thingspeak.channel_id=ID_DO_CANAL
 thingspeak.read_api_key=CHAVE_DE_LEITURA_SE_CANAL_PRIVADO
-thingspeak.write_api_key=CHAVE_DE_ESCRITA
-# Firebase Console > Configuracoes do projeto > Seus apps Android.
-# Ative autenticacao anonima e crie regras do Firestore limitadas ao UID autenticado.
-firebase.api_key=CHAVE_PUBLICA_DA_API_FIREBASE
-firebase.app_id=ID_DO_APP_ANDROID_FIREBASE
-firebase.project_id=ID_DO_PROJETO_FIREBASE
+# Baixe google-services.json no Firebase Console e coloque em app/.
+# Consulte FIREBASE_SETUP.md para habilitar login e regras do Firestore.

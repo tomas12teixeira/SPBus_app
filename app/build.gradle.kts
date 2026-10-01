@@ -9,6 +9,11 @@ fun buildConfigString(value: String): String = "\"${value.replace("\\", "\\\\").
 
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.compose)
+}
+
+if (file("google-services.json").isFile) {
+    apply(plugin = "com.google.gms.google-services")
 }
 
 android {
@@ -28,10 +33,6 @@ android {
         buildConfigField("String", "SPTRANS_TOKEN", buildConfigString(spbusSecret("sptrans.token")))
         buildConfigField("String", "THINGSPEAK_CHANNEL_ID", buildConfigString(spbusSecret("thingspeak.channel_id")))
         buildConfigField("String", "THINGSPEAK_READ_API_KEY", buildConfigString(spbusSecret("thingspeak.read_api_key")))
-        buildConfigField("String", "THINGSPEAK_WRITE_API_KEY", buildConfigString(spbusSecret("thingspeak.write_api_key")))
-        buildConfigField("String", "FIREBASE_API_KEY", buildConfigString(spbusSecret("firebase.api_key")))
-        buildConfigField("String", "FIREBASE_APP_ID", buildConfigString(spbusSecret("firebase.app_id")))
-        buildConfigField("String", "FIREBASE_PROJECT_ID", buildConfigString(spbusSecret("firebase.project_id")))
     }
 
     buildTypes {
@@ -47,6 +48,7 @@ android {
     }
     buildFeatures {
         buildConfig = true
+        compose = true
     }
 }
 
@@ -55,6 +57,14 @@ dependencies {
     implementation(libs.androidx.appcompat)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
+    implementation(platform(libs.androidx.compose.bom))
+    implementation(libs.androidx.activity.compose)
+    implementation(libs.androidx.compose.ui)
+    implementation(libs.androidx.compose.material3)
+    implementation(libs.androidx.navigation.compose)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.viewmodel.compose)
+    implementation(libs.play.services.location)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
     implementation("com.google.firebase:firebase-auth")

@@ -10,12 +10,19 @@ data class FleetTelemetry(
     val timestamp: String
 )
 
-data class ThingSpeakDistanceReading(
+data class ThingSpeakReading(
     val createdAt: String,
-    val distanceMeters: Int
+    val fields: Map<Int, Double>
 )
 
-data class ThingSpeakDistanceFeed(
-    val readings: List<ThingSpeakDistanceReading>,
-    val channelId: String
+data class ThingSpeakField(
+    val number: Int,
+    val label: String
+)
+
+data class ThingSpeakFeed(
+    val readings: List<ThingSpeakReading>,
+    val channelId: String,
+    val channelName: String,
+    val fields: List<ThingSpeakField>
 )

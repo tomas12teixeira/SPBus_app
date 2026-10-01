@@ -1,9 +1,7 @@
 package com.example.spbus.data
 
 import android.content.Context
-import com.example.spbus.BuildConfig
 import com.google.firebase.FirebaseApp
-import com.google.firebase.FirebaseOptions
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
@@ -22,6 +20,49 @@ class FirebaseRouteStore(context: Context) {
     private val firestore = app?.let(FirebaseFirestore::getInstance)
 
     val isConfigured: Boolean get() = app != null
+    val isSignedIn: Boolean get() = auth?.currentUser != null
+    val accountEmail: String? get() = auth?.currentUser?.email
+
+    fun register(email: String, password: String, callback: (String?) -> Unit) {
+        val firebaseAuth = auth
+        if (firebaseAuth == null) {
+            callback(firebaseSetupMessage())
+            return
+        }
+        firebaseAuth.createUserWithEmailAndPassword(email.trim(), password)
+            .addOnSuccessListener { result ->
+                val user = result.user
+                val profile = user?.let {
+                    firestore?.collection("users")?.document(it.uid)?.set(
+                        mapOf(
+                            "uid" to it.uid,
+                            "email" to it.email,
+                            "createdAt" to FieldValue.serverTimestamp(),
+                            "preferences" to mapOf("theme" to "system")
+                        )
+                    )
+                }
+                if (profile == null) callback("Firebase Firestore nao esta configurado.")
+                else profile.addOnSuccessListener { callback(null) }
+                    .addOnFailureListener { callback(it.localizedMessage ?: "Conta criada, mas o perfil nao foi salvo.") }
+            }
+            .addOnFailureListener { callback(it.localizedMessage ?: "Nao foi possivel criar a conta.") }
+    }
+
+    fun signIn(email: String, password: String, callback: (String?) -> Unit) {
+        val firebaseAuth = auth
+        if (firebaseAuth == null) {
+            callback(firebaseSetupMessage())
+            return
+        }
+        firebaseAuth.signInWithEmailAndPassword(email.trim(), password)
+            .addOnSuccessListener { callback(null) }
+            .addOnFailureListener { callback(it.localizedMessage ?: "Nao foi possivel entrar.") }
+    }
+
+    fun signOut() {
+        auth?.signOut()
+    }
 
     fun saveRoute(
         origin: String,
@@ -31,7 +72,7 @@ class FirebaseRouteStore(context: Context) {
         callback: (String?) -> Unit
     ) {
         withUser(callback) { user ->
-            val collection = if (favorite) "favorites" else "history"
+            val collection = if (favorite) "favorite_routes" else "history"
             val documentId = if (favorite) {
                 listOf(origin, destination, line).joinToString("_") { it.hashCode().toUInt().toString(16) }
             } else {
@@ -57,7 +98,7 @@ class FirebaseRouteStore(context: Context) {
 
     fun loadRoutes(favorites: Boolean, callback: (List<SavedTransitRoute>, String?) -> Unit) {
         withUser({ error -> callback(emptyList(), error) }) { user ->
-            val collection = if (favorites) "favorites" else "history"
+            val collection = if (favorites) "favorite_routes" else "history"
             firestore?.collection("users")?.document(user.uid)?.collection(collection)
                 ?.orderBy("updatedAt", Query.Direction.DESCENDING)
                 ?.limit(12)
@@ -80,10 +121,44 @@ class FirebaseRouteStore(context: Context) {
         }
     }
 
+    fun saveFavoriteLine(lineCode: String, callback: (String?) -> Unit) {
+        withUser(callback) { user ->
+            val document = firestore?.collection("users")?.document(user.uid)
+                ?.collection("favorite_lines")?.document(lineCode.hashCode().toUInt().toString(16))
+            if (document == null) {
+                callback("Firebase nao esta configurado.")
+                return@withUser
+            }
+            document.set(mapOf("lineCode" to lineCode, "updatedAt" to FieldValue.serverTimestamp()))
+                .addOnSuccessListener { callback(null) }
+                .addOnFailureListener { callback(it.localizedMessage ?: "Falha ao salvar a linha favorita.") }
+        }
+    }
+
+    fun saveFeedback(lineCode: String, category: String, comment: String, callback: (String?) -> Unit) {
+        withUser(callback) { user ->
+            val collection = firestore?.collection("feedbacks")
+            if (collection == null) {
+                callback("Firebase nao esta configurado.")
+                return@withUser
+            }
+            collection.add(
+                mapOf(
+                    "uid" to user.uid,
+                    "lineCode" to lineCode.trim(),
+                    "category" to category,
+                    "comment" to comment.trim(),
+                    "createdAt" to FieldValue.serverTimestamp()
+                )
+            ).addOnSuccessListener { callback(null) }
+                .addOnFailureListener { callback(it.localizedMessage ?: "Falha ao salvar o relato.") }
+        }
+    }
+
     private fun withUser(onError: (String?) -> Unit, action: (com.google.firebase.auth.FirebaseUser) -> Unit) {
         val firebaseAuth = auth
         if (firebaseAuth == null) {
-            onError("Configure firebase.api_key, firebase.app_id e firebase.project_id em local.properties.")
+            onError(firebaseSetupMessage())
             return
         }
         firebaseAuth.currentUser?.let {
@@ -95,28 +170,11 @@ class FirebaseRouteStore(context: Context) {
             .addOnFailureListener { onError(it.localizedMessage ?: "Ative a autenticacao anonima no Firebase.") }
     }
 
-    private fun createFirebaseApp(context: Context): FirebaseApp? {
-        val apiKey = BuildConfig.FIREBASE_API_KEY.trim()
-        val appId = BuildConfig.FIREBASE_APP_ID.trim()
-        val projectId = BuildConfig.FIREBASE_PROJECT_ID.trim()
-        if (apiKey.isBlank() || appId.isBlank() || projectId.isBlank()) return null
-        return try {
-            FirebaseApp.getApps(context).firstOrNull { it.name == FIREBASE_APP_NAME }
-                ?: FirebaseApp.initializeApp(
-                    context,
-                    FirebaseOptions.Builder()
-                        .setApiKey(apiKey)
-                        .setApplicationId(appId)
-                        .setProjectId(projectId)
-                        .build(),
-                    FIREBASE_APP_NAME
-                )
-        } catch (_: IllegalStateException) {
-            null
-        }
-    }
+    private fun createFirebaseApp(context: Context): FirebaseApp? =
+        FirebaseApp.getApps(context).firstOrNull { it.name == FirebaseApp.DEFAULT_APP_NAME }
+            ?: runCatching { FirebaseApp.initializeApp(context) }.getOrNull()
 
-    companion object {
-        private const val FIREBASE_APP_NAME = "spbus"
-    }
+    private fun firebaseSetupMessage() =
+        "Adicione o google-services.json do seu projeto em app/ e habilite Email/Senha e autenticacao anonima no Firebase."
+
 }
