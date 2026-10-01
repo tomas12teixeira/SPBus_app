@@ -48,17 +48,13 @@ android {
 }
 
 dependencies {
-    implementation("androidx.browser:browser:1.8.0")
-
-    implementation("androidx.preference:preference-ktx:1.2.1")
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.core.ktx)
     implementation(libs.material)
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
-    implementation("org.osmdroid:osmdroid-android:6.1.20")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
