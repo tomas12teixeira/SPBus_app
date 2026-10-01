@@ -35,15 +35,13 @@ import com.google.android.material.button.MaterialButton
 import com.google.android.material.card.MaterialCardView
 import com.google.android.material.floatingactionbutton.FloatingActionButton
 import com.google.android.material.textfield.TextInputLayout
-import com.example.spbus.data.BusPosition
-import com.example.spbus.data.BusStopRecord
 import com.example.spbus.data.FleetTelemetry
-import com.example.spbus.data.GeminiService
-import com.example.spbus.data.PassengerFeedback
-import com.example.spbus.data.SupabaseRealtimeClient
-import com.example.spbus.data.SupabaseRealtimeListener
-import com.example.spbus.data.SupabaseTransitRepository
+import com.example.spbus.data.SpTransLine
+import com.example.spbus.data.SpTransService
+import com.example.spbus.data.SpTransStop
+import com.example.spbus.data.SpTransVehicle
 import com.example.spbus.data.ThingSpeakService
+import com.example.spbus.data.WalkingDistanceTracker
 import okhttp3.*
 import org.json.JSONArray
 import org.json.JSONObject
@@ -73,8 +71,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
 
     private val LOCATION_PERMISSION_REQ_CODE = 1001
     private val client: OkHttpClient by lazy { OkHttpClient() }
-    private val transitRepository by lazy { SupabaseTransitRepository() }
-    private val geminiService by lazy { GeminiService() }
+    private val spTransService by lazy { SpTransService() }
     private val thingSpeakService by lazy { ThingSpeakService() }
     private val handler = Handler(Looper.getMainLooper())
     private var runnableOrigem: Runnable? = null
@@ -86,7 +83,6 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var campoDestino: AutoCompleteTextView
     private lateinit var botaoTracejar: Button
     private lateinit var fabLocalizacao: FloatingActionButton
-    private lateinit var fabIA: FloatingActionButton
     private lateinit var fabIoT: FloatingActionButton
     private lateinit var fabReportar: FloatingActionButton
     private lateinit var painelBusca: View
@@ -97,6 +93,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     private lateinit var containerOpcoesRotas: LinearLayout
     private lateinit var cardFeedbacksRota: MaterialCardView
     private lateinit var textoFeedbacksPassageiros: TextView
+    private lateinit var textoDistanciaHoje: TextView
 
     // Container dinâmico para Recentes e Favoritos
     private lateinit var containerPainelHome: LinearLayout
@@ -123,10 +120,11 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     private lateinit var sensorManager: SensorManager
+    private var contadorPassosSensor: Sensor? = null
+    private var detectorPassosSensor: Sensor? = null
     private var acelerometro: Sensor? = null
-    private var aceleracaoAtual: Float = SensorManager.GRAVITY_EARTH
-    private var aceleracaoAnterior: Float = SensorManager.GRAVITY_EARTH
-    private var ultimoVetorAceleracao: Float = 0f
+    private lateinit var walkingDistanceTracker: WalkingDistanceTracker
+    private var monitoramentoVeiculosRunnable: Runnable? = null
     private var rotaEmAndamento: RotaMultimodal? = null
 
     private var pontoOrigem: GeoPoint? = null
@@ -170,11 +168,11 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     )
 
     private val listaRotas = mutableListOf<RotaMultimodal>()
-    private val onibusAoVivo = linkedMapOf<String, BusPosition>()
-    private var paradasOnibusAoVivo: List<BusStopRecord> = emptyList()
+    private var veiculosDaLinha: List<SpTransVehicle> = emptyList()
     private val marcadoresOnibus = linkedMapOf<String, Marker>()
-    private val feedbacksRemotos = mutableListOf<PassengerFeedback>()
-    private var realtimeClient: SupabaseRealtimeClient? = null
+    private var linhaSelecionadaCodigo: Int? = null
+    private var screenResumed = false
+    private var ultimaGravacaoDistanciaMs = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -195,7 +193,10 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         criarBotaoEntreiNoOnibus()
 
         sensorManager = getSystemService(Context.SENSOR_SERVICE) as SensorManager
+        contadorPassosSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_COUNTER)
+        detectorPassosSensor = sensorManager.getDefaultSensor(Sensor.TYPE_STEP_DETECTOR)
         acelerometro = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+        walkingDistanceTracker = WalkingDistanceTracker(this)
 
         configurarMapaRealista()
 
@@ -269,7 +270,6 @@ MainActivity : AppCompatActivity(), SensorEventListener {
             obterLocalizacaoGPSComFeedback()
         }
 
-        fabIA.setOnClickListener { abrirAssistenteIANativo() }
         fabIoT.setOnClickListener { abrirPainelTelemetria() }
         fabReportar.setOnClickListener { abrirModalNovoFeedbackPassageiro() }
         cardFeedbacksRota.setOnClickListener { abrirModalMuralFeedbacks() }
@@ -419,7 +419,6 @@ MainActivity : AppCompatActivity(), SensorEventListener {
             obterLocalizacaoGPSComFeedback()
         })
         fabIoT = addMapButton("Telemetria da frota", android.R.drawable.ic_menu_info_details, Color.rgb(39, 139, 114), { abrirPainelTelemetria() }, mini = true)
-        fabIA = addMapButton("Assistente SPBus", android.R.drawable.ic_dialog_info, Color.rgb(23, 59, 77), { abrirAssistenteIANativo() })
         fabReportar = addMapButton("Enviar relato", android.R.drawable.ic_menu_edit, Color.rgb(227, 107, 84), { abrirModalNovoFeedbackPassageiro() })
 
         root.addView(controls, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.END).apply {
@@ -940,78 +939,159 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     ) {
         val orig = pontoOrigem ?: return
         val dest = pontoDestino ?: return
+        if (!spTransService.isConfigured) {
+            mostrarErroRota("Configure sptrans.token em local.properties para consultar linhas oficiais.")
+            return
+        }
 
         listaRotas.clear()
+        containerOpcoesRotas.removeAllViews()
+        textoStatus.text = "Consultando linhas e paradas oficiais da SPTrans..."
+        val origemBusca = enderecoOrigemNome.ifBlank { "${orig.latitude}, ${orig.longitude}" }
+        val destinoBusca = enderecoDestinoNome.ifBlank { "${dest.latitude}, ${dest.longitude}" }
 
-        val distCaminhadaInicioMetros = orig.distanceToAsDouble(pontoEmbarque).toInt()
-        val tempoCamInicioMin = ceil(distCaminhadaInicioMetros / 75.0).toInt().coerceAtLeast(1)
-
-        val distCaminhadaFimMetros = pontoDesembarque.distanceToAsDouble(dest).toInt()
-        val tempoCamFimMin = ceil(distCaminhadaFimMetros / 75.0).toInt().coerceAtLeast(1)
-
-        val tempoOnibusBaseMin = ceil((duracaoViariaSegundos * 1.15) / 60.0).toInt().coerceAtLeast(3)
-
-        val origBairro = extrairBairroOuRua(enderecoOrigemNome)
-        val destBairro = extrairBairroOuRua(enderecoDestinoNome)
-
-        val paradasNoCorredor = paradasOnibusAoVivo.mapNotNull { parada ->
-            val point = GeoPoint(parada.latitude, parada.longitude)
-            val distance = trechoOnibus.minOfOrNull { it.distanceToAsDouble(point) } ?: Double.MAX_VALUE
-            if (distance <= 500.0) parada to point else null
-        }
-        val linhasComParadas = paradasNoCorredor
-            .flatMap { (parada, _) -> parada.lines.map { it to parada } }
-            .groupBy({ it.first }, { it.second })
-            .filter { (line, stops) -> line.isNotBlank() && stops.distinctBy { it.id }.size >= 2 }
-        val linhasDinamicas = linhasComParadas.keys.sorted().take(3).map { lineCode ->
-            Triple(lineCode.hashCode(), lineCode, "Paradas cadastradas · $origBairro / $destBairro")
-        }.ifEmpty {
-            listOf(Triple(0, "DEMO", "Sem dados GTFS suficientes para este corredor"))
-        }
-
-        val listaParadasReais = if (paradasNoCorredor.isNotEmpty()) {
-            paradasNoCorredor.mapIndexed { index, (parada, point) ->
-                ParadaOnibus(index + 1, parada.name, "Ponto cadastrado no Supabase", point)
+        spTransService.searchStops(origemBusca) { stopsOrigem, erroOrigem ->
+            if (stopsOrigem.isNullOrEmpty()) {
+                mostrarErroRota(erroOrigem ?: "A SPTrans não encontrou pontos próximos da origem.")
+                return@searchStops
             }
-        } else {
-            val geocoder = Geocoder(this, Locale("pt", "BR"))
-            val lista = mutableListOf<ParadaOnibus>()
-            val passo = (trechoOnibus.size / 5).coerceAtLeast(1)
-            var numParada = 1
-            for (pIndex in trechoOnibus.indices step passo) {
-                val pt = trechoOnibus[pIndex]
-                var nomeRuaReal = "Parada estimada $numParada"
-                try {
-                    val enderecos = geocoder.getFromLocation(pt.latitude, pt.longitude, 1)
-                    if (!enderecos.isNullOrEmpty()) {
-                        val rua = enderecos[0].thoroughfare ?: enderecos[0].featureName
-                        if (!rua.isNullOrEmpty()) nomeRuaReal = rua
-                    }
-                } catch (e: Exception) {
-                    Log.w("Paradas", "Erro no geocoder")
+            spTransService.searchStops(destinoBusca) { stopsDestino, erroDestino ->
+                if (stopsDestino.isNullOrEmpty()) {
+                    mostrarErroRota(erroDestino ?: "A SPTrans não encontrou pontos próximos do destino.")
+                    return@searchStops
                 }
-                lista.add(ParadaOnibus(numParada, "Parada estimada $numParada", nomeRuaReal, pt))
-                numParada++
+                val embarque = paradaMaisProxima(stopsOrigem, orig)
+                val desembarque = paradaMaisProxima(stopsDestino, dest)
+                if (embarque == null || desembarque == null) {
+                    mostrarErroRota("Não encontrei pontos da SPTrans a até 1,5 km dos endereços.")
+                    return@searchStops
+                }
+                spTransService.linesAtStop(embarque.code) { linhasOrigem, erroLinhasOrigem ->
+                    if (linhasOrigem.isNullOrEmpty()) {
+                        mostrarErroRota(erroLinhasOrigem ?: "A SPTrans não retornou linhas com previsão no ponto de embarque.")
+                        return@linesAtStop
+                    }
+                    spTransService.linesAtStop(desembarque.code) { linhasDestino, erroLinhasDestino ->
+                        if (linhasDestino.isNullOrEmpty()) {
+                            mostrarErroRota(erroLinhasDestino ?: "A SPTrans não retornou linhas com previsão no ponto de destino.")
+                            return@linesAtStop
+                        }
+                        val destinos = linhasDestino.map { it.code }.toSet()
+                        val linhasDiretas = linhasOrigem.filter { it.code in destinos }.distinctBy { it.code }.take(5)
+                        if (linhasDiretas.isEmpty()) {
+                            mostrarErroRota("Não há linha direta identificada pela SPTrans entre esses pontos.")
+                            return@linesAtStop
+                        }
+                        carregarOpcoesSpTrans(linhasDiretas, 0, orig, dest, mutableListOf())
+                    }
+                }
             }
-            lista
+        }
+    }
+
+    private fun paradaMaisProxima(paradas: List<SpTransStop>, ponto: GeoPoint): SpTransStop? = paradas
+        .map { parada -> parada to ponto.distanceToAsDouble(GeoPoint(parada.latitude, parada.longitude)) }
+        .filter { (_, distancia) -> distancia <= 1500.0 }
+        .minByOrNull { it.second }
+        ?.first
+
+    private fun carregarOpcoesSpTrans(
+        linhas: List<SpTransLine>,
+        indice: Int,
+        origem: GeoPoint,
+        destino: GeoPoint,
+        rotas: MutableList<RotaMultimodal>
+    ) {
+        if (indice >= linhas.size) {
+            runOnUiThread {
+                listaRotas.clear()
+                listaRotas.addAll(rotas)
+                if (listaRotas.isEmpty()) mostrarErroRota("A SPTrans não encontrou uma sequência de paradas válida para esse sentido.")
+                else renderizarListaOpcoesExecutivas()
+            }
+            return
         }
 
-        for ((i, linha) in linhasDinamicas.withIndex()) {
-            val tempoEsperaMin = 3 + (i * 4)
-            val tempoTotal = tempoCamInicioMin + tempoEsperaMin + tempoOnibusBaseMin + tempoCamFimMin
+        val linha = linhas[indice]
+        spTransService.stopsForLine(linha.code) { paradas, erro ->
+            if (paradas.isNullOrEmpty()) {
+                if (!erro.isNullOrBlank()) Log.w("SPTrans", "Falha ao carregar paradas da linha ${linha.number}: $erro")
+                carregarOpcoesSpTrans(linhas, indice + 1, origem, destino, rotas)
+                return@stopsForLine
+            }
+            val indexEmbarque = paradas.indices.minByOrNull { i ->
+                origem.distanceToAsDouble(GeoPoint(paradas[i].latitude, paradas[i].longitude))
+            }
+            val indexDesembarque = paradas.indices.minByOrNull { i ->
+                destino.distanceToAsDouble(GeoPoint(paradas[i].latitude, paradas[i].longitude))
+            }
+            if (indexEmbarque == null || indexDesembarque == null || indexEmbarque >= indexDesembarque) {
+                carregarOpcoesSpTrans(linhas, indice + 1, origem, destino, rotas)
+                return@stopsForLine
+            }
 
-            listaRotas.add(
-                RotaMultimodal(
-                    linha.first, linha.second, linha.third, tempoTotal,
-                    tempoCamInicioMin, tempoEsperaMin, tempoOnibusBaseMin, tempoCamFimMin,
-                    distCaminhadaInicioMetros, distCaminhadaFimMetros,
-                    pontoEmbarque, pontoDesembarque, caminhadaInicio, trechoOnibus, caminhadaFim,
-                    listaParadasReais
+            val sequencia = paradas.subList(indexEmbarque, indexDesembarque + 1)
+            val embarque = sequencia.first()
+            val desembarque = sequencia.last()
+            val pontosOnibus = sequencia.map { GeoPoint(it.latitude, it.longitude) }
+            val pontosCaminhadaInicio = listOf(origem, pontosOnibus.first())
+            val pontosCaminhadaFim = listOf(pontosOnibus.last(), destino)
+            val distanciaInicio = origem.distanceToAsDouble(pontosOnibus.first()).toInt()
+            val distanciaFim = pontosOnibus.last().distanceToAsDouble(destino).toInt()
+            val distanciaOnibus = pontosOnibus.zipWithNext().sumOf { (a, b) -> a.distanceToAsDouble(b) }.toInt()
+            val tempoInicio = ceil(distanciaInicio / 75.0).toInt().coerceAtLeast(1)
+            val tempoFim = ceil(distanciaFim / 75.0).toInt().coerceAtLeast(1)
+            val tempoOnibus = ceil(distanciaOnibus / 250.0).toInt().coerceAtLeast(3)
+
+            spTransService.arrivals(embarque.code, linha.code) { previsoes, _ ->
+                val espera = previsoes?.firstOrNull()?.let(::minutosAteChegada) ?: 5
+                rotas.add(
+                    RotaMultimodal(
+                        linha.code,
+                        linha.number,
+                        "${linha.origin} → ${linha.destination}",
+                        tempoInicio + espera + tempoOnibus + tempoFim,
+                        tempoInicio,
+                        espera,
+                        tempoOnibus,
+                        tempoFim,
+                        distanciaInicio,
+                        distanciaFim,
+                        pontosOnibus.first(),
+                        pontosOnibus.last(),
+                        pontosCaminhadaInicio,
+                        pontosOnibus,
+                        pontosCaminhadaFim,
+                        sequencia.mapIndexed { index, parada ->
+                            ParadaOnibus(index + 1, parada.name, parada.address, GeoPoint(parada.latitude, parada.longitude))
+                        }
+                    )
                 )
-            )
+                carregarOpcoesSpTrans(linhas, indice + 1, origem, destino, rotas)
+            }
         }
+    }
 
-        runOnUiThread { renderizarListaOpcoesExecutivas() }
+    private fun minutosAteChegada(horario: String): Int? {
+        val partes = horario.split(":")
+        if (partes.size != 2) return null
+        val hora = partes[0].toIntOrNull() ?: return null
+        val minuto = partes[1].toIntOrNull() ?: return null
+        if (hora !in 0..23 || minuto !in 0..59) return null
+        val agora = Calendar.getInstance()
+        val atualEmMinutos = agora.get(Calendar.HOUR_OF_DAY) * 60 + agora.get(Calendar.MINUTE)
+        val chegadaEmMinutos = hora * 60 + minuto
+        val diferenca = (chegadaEmMinutos - atualEmMinutos + 1440) % 1440
+        return diferenca.coerceIn(0, 90)
+    }
+
+    private fun mostrarErroRota(mensagem: String) {
+        runOnUiThread {
+            listaRotas.clear()
+            containerOpcoesRotas.removeAllViews()
+            textoStatus.text = mensagem
+            Toast.makeText(this, mensagem, Toast.LENGTH_LONG).show()
+        }
     }
 
     private fun renderizarListaOpcoesExecutivas() {
@@ -1089,6 +1169,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
                 ).apply { setMargins(12, 0, 0, 0) }
                 layoutParams = params
                 setOnClickListener {
+                    selecionarLinha(rota.codigoLinhaSPTrans)
                     desenharRotaNoMapa(index)
                     iniciarModoNavegacaoOrientada(rota)
                 }
@@ -1105,6 +1186,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
 
             card.setOnClickListener {
                 rotaEmAndamento = rota
+                selecionarLinha(rota.codigoLinhaSPTrans)
                 desenharRotaNoMapa(index)
             }
 
@@ -1158,8 +1240,7 @@ MainActivity : AppCompatActivity(), SensorEventListener {
             adicionarMarcador(parada.ponto, "🏣 ${parada.nome}", parada.endereco)
         }
 
-        marcadoresOnibus.clear()
-        onibusAoVivo.values.forEach(::atualizarMarcadorOnibus)
+        atualizarMarcadoresVeiculos(veiculosDaLinha)
 
         if (feedbacksDoTrajeto.isNotEmpty()) {
             cardFeedbacksRota.visibility = View.VISIBLE
@@ -1286,70 +1367,6 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         dialog.show()
     }
 
-    private fun abrirAssistenteIANativo() {
-        val content = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(48, 40, 48, 24)
-        }
-        content.addView(TextView(this).apply {
-            text = "Assistente SPBus"
-            textSize = 20f
-            setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.rgb(24, 50, 59))
-        })
-        content.addView(TextView(this).apply {
-            text = "Pergunte sobre linhas, integrações e trajetos."
-            textSize = 13f
-            setTextColor(Color.rgb(115, 132, 138))
-            setPadding(0, 8, 0, 20)
-        })
-        val input = EditText(this).apply {
-            hint = "Como funciona a integração ônibus e metrô?"
-            minLines = 1
-            maxLines = 3
-            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_FLAG_MULTI_LINE
-        }
-        content.addView(input)
-        val sendButton = MaterialButton(this).apply {
-            text = "Perguntar"
-            isAllCaps = false
-        }
-        content.addView(sendButton)
-        val progress = ProgressBar(this).apply { visibility = View.GONE }
-        content.addView(progress)
-        val answer = TextView(this).apply {
-            text = "Olá! Como posso ajudar na sua viagem?"
-            textSize = 14f
-            setTextColor(Color.rgb(33, 40, 42))
-            setPadding(16, 16, 16, 16)
-        }
-        content.addView(answer)
-        val dialog = AlertDialog.Builder(this)
-            .setView(content)
-            .setNegativeButton("Fechar", null)
-            .create()
-
-        sendButton.setOnClickListener {
-            val question = input.text.toString().trim()
-            if (question.isBlank()) {
-                input.error = "Digite sua pergunta"
-                return@setOnClickListener
-            }
-            sendButton.isEnabled = false
-            progress.visibility = View.VISIBLE
-            answer.text = "Consultando o assistente..."
-            geminiService.ask(question, feedbacksRemotos.toList()) { reply, error ->
-                runOnUiThread {
-                    if (isFinishing || isDestroyed) return@runOnUiThread
-                    progress.visibility = View.GONE
-                    sendButton.isEnabled = true
-                    answer.text = reply ?: error ?: "O assistente não retornou uma resposta."
-                }
-            }
-        }
-        dialog.show()
-    }
-
     private fun abrirPainelTelemetria() {
         val content = ScrollView(this)
         val panel = LinearLayout(this).apply {
@@ -1358,91 +1375,100 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         }
         content.addView(panel)
         panel.addView(TextView(this).apply {
-            text = "Telemetria da frota"
+            text = "Distância caminhada hoje"
             textSize = 21f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.rgb(24, 50, 59))
         })
+        val distance = TextView(this).apply {
+            text = "${walkingDistanceTracker.distanceTodayMeters} m"
+            textSize = 32f
+            setTypeface(null, Typeface.BOLD)
+            setTextColor(Color.rgb(39, 139, 114))
+            setPadding(0, 8, 0, 4)
+        }
+        panel.addView(distance)
         val status = TextView(this).apply {
-            text = "Conectando ao ThingSpeak..."
+            text = "Medição local pelo sensor de passos; sincronização com ThingSpeak."
             textSize = 12f
             setTextColor(Color.rgb(115, 132, 138))
             setPadding(0, 6, 0, 12)
         }
         panel.addView(status)
-        val refresh = MaterialButton(this).apply { text = "Atualizar leituras"; isAllCaps = false }
+        val refresh = MaterialButton(this).apply { text = "Enviar e atualizar histórico"; isAllCaps = false }
         panel.addView(refresh)
-        fun metric(label: String, value: String, color: Int): TextView {
-            panel.addView(TextView(this).apply {
-                text = label
-                textSize = 12f
-                setTextColor(Color.rgb(115, 132, 138))
-                setPadding(0, 18, 0, 2)
-            })
-            return TextView(this).apply {
-                text = value
-                textSize = 25f
-                setTypeface(null, Typeface.BOLD)
-                setTextColor(color)
-                panel.addView(this)
-            }
-        }
-        val occupancy = metric("Lotação estimada", "--%", Color.rgb(227, 107, 84))
-        val occupancyProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply { max = 100 }
-        panel.addView(occupancyProgress, LinearLayout.LayoutParams(-1, 12).apply { topMargin = 10 })
-        val speed = metric("Velocidade média da frota", "-- km/h", Color.rgb(39, 139, 114))
-        val temperature = metric("Temperatura interna", "-- °C", Color.rgb(183, 140, 32))
         panel.addView(TextView(this).apply {
-            text = "Histórico dos sensores"
+            text = "Histórico ThingSpeak · metros"
             textSize = 15f
             setTypeface(null, Typeface.BOLD)
             setTextColor(Color.rgb(24, 50, 59))
             setPadding(0, 24, 0, 8)
         })
-        val chart = WebView(this)
-        chart.settings.javaScriptEnabled = true
-        chart.settings.domStorageEnabled = true
-        chart.settings.allowFileAccess = false
-        chart.settings.allowContentAccess = false
-        chart.settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        val chart = WebView(this).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.allowFileAccess = false
+            settings.allowContentAccess = false
+            settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
+        }
         val channelId = BuildConfig.THINGSPEAK_CHANNEL_ID.trim()
         if (channelId.isNotBlank()) {
             val safeChannelId = android.text.TextUtils.htmlEncode(channelId)
-            val html = """<html><meta name="viewport" content="width=device-width, initial-scale=1"><body style="margin:0;background:#f1f4f2;font-family:sans-serif">${(1..3).joinToString("") { field -> "<iframe title=\"Sensor $field\" style=\"width:100%;height:260px;border:0;margin:4px 0\" src=\"https://thingspeak.com/channels/$safeChannelId/charts/$field?dynamic=true&results=40&type=line\"></iframe>" }}</body></html>"""
+            val html = """<html><meta name="viewport" content="width=device-width, initial-scale=1"><body style="margin:0;background:#f1f4f2;font-family:sans-serif"><iframe title="Distância caminhada" style="width:100%;height:360px;border:0" src="https://thingspeak.com/channels/$safeChannelId/charts/1?dynamic=true&results=48&type=line"></iframe></body></html>"""
             chart.loadDataWithBaseURL("https://thingspeak.com/", html, "text/html", "UTF-8", null)
         } else {
-            chart.loadDataWithBaseURL(null, "<html><body style='font-family:sans-serif;padding:20px'>Configure THINGSPEAK_CHANNEL_ID para carregar os gráficos.</body></html>", "text/html", "UTF-8", null)
+            chart.loadDataWithBaseURL(null, "<html><body style='font-family:sans-serif;padding:20px'>Configure thingspeak.channel_id no local.properties para carregar o gráfico.</body></html>", "text/html", "UTF-8", null)
         }
-        panel.addView(chart, LinearLayout.LayoutParams(-1, 520))
+        panel.addView(chart, LinearLayout.LayoutParams(-1, 380))
+        val history = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.rgb(55, 75, 80))
+            setPadding(0, 8, 0, 0)
+        }
+        panel.addView(history)
 
+        val updateDashboard = {
+            distance.text = "${walkingDistanceTracker.distanceTodayMeters} m"
+            carregarHistoricoDistancia(status, history)
+        }
         val dialog = BottomSheetDialog(this)
         dialog.setContentView(content)
-        refresh.setOnClickListener { carregarTelemetria(status, occupancy, occupancyProgress, speed, temperature) }
-        dialog.setOnShowListener { carregarTelemetria(status, occupancy, occupancyProgress, speed, temperature) }
+        refresh.setOnClickListener { enviarDistanciaThingSpeak(force = true); updateDashboard() }
+        dialog.setOnShowListener { updateDashboard() }
         dialog.show()
     }
 
-    private fun carregarTelemetria(
-        status: TextView,
-        occupancy: TextView,
-        progress: ProgressBar,
-        speed: TextView,
-        temperature: TextView
-    ) {
-        status.text = "Atualizando leituras do ThingSpeak..."
-        thingSpeakService.loadTelemetry { telemetry, error ->
+    private fun carregarHistoricoDistancia(status: TextView, history: TextView) {
+        if (!thingSpeakService.isConfigured) {
+            status.text = "Configure thingspeak.channel_id em local.properties para sincronizar."
+            history.text = "A distância continua sendo contada e salva neste aparelho."
+            return
+        }
+        status.text = "Lendo histórico do ThingSpeak..."
+        thingSpeakService.loadDistanceHistory { feed, error ->
             runOnUiThread {
-                val latest = telemetry?.readings?.lastOrNull()
-                occupancy.text = latest?.occupancy?.let { "${it.coerceIn(0.0, 100.0).toInt()}%" } ?: "--%"
-                progress.progress = latest?.occupancy?.toInt()?.coerceIn(0, 100) ?: 0
-                speed.text = latest?.speedKmh?.let { "${"%.0f".format(Locale("pt", "BR"), it)} km/h" } ?: "-- km/h"
-                temperature.text = latest?.temperatureCelsius?.let { "${"%.1f".format(Locale("pt", "BR"), it)} °C" } ?: "-- °C"
-                status.text = when {
-                    error != null -> error
-                    latest == null -> "Canal conectado, aguardando leituras dos campos 1, 2 e 3."
-                    else -> "Canal ${telemetry?.channelId} · ${latest.createdAt}"
+                val readings = feed?.readings.orEmpty().takeLast(10).reversed()
+                status.text = error ?: "Canal ${feed?.channelId} · campo 1 em metros"
+                history.text = if (readings.isEmpty()) "Nenhuma leitura enviada ainda." else readings.joinToString("\n") {
+                    "${it.createdAt}  ·  ${it.distanceMeters} m"
                 }
             }
+        }
+    }
+
+    private fun atualizarDistanciaHoje() {
+        if (!::walkingDistanceTracker.isInitialized) return
+        if (::textoDistanciaHoje.isInitialized) textoDistanciaHoje.text = "Hoje: ${walkingDistanceTracker.distanceTodayMeters} m a pé"
+        enviarDistanciaThingSpeak()
+    }
+
+    private fun enviarDistanciaThingSpeak(force: Boolean = false) {
+        if (!::walkingDistanceTracker.isInitialized || !thingSpeakService.isConfigured) return
+        val now = System.currentTimeMillis()
+        if (!force && now - ultimaGravacaoDistanciaMs < 16_000L) return
+        ultimaGravacaoDistanciaMs = now
+        thingSpeakService.updateWalkingDistance(walkingDistanceTracker.distanceTodayMeters) { error ->
+            if (error != null) Log.i("ThingSpeak", error)
         }
     }
 
@@ -1484,18 +1510,10 @@ MainActivity : AppCompatActivity(), SensorEventListener {
             val description = comment.text.toString().trim().ifBlank { selected }
             val line = rotaEmAndamento?.numeroLinha ?: "Não informada"
             send.isEnabled = false
-            transitRepository.submitFeedback(line, selected, description) { error ->
-                runOnUiThread {
-                    send.isEnabled = true
-                    if (error == null) {
-                        registrarFeedbackLocal("$line · $selected: $description")
-                        Toast.makeText(this, "Relato enviado para a comunidade.", Toast.LENGTH_SHORT).show()
-                        dialog.dismiss()
-                    } else {
-                        Toast.makeText(this, error, Toast.LENGTH_LONG).show()
-                    }
-                }
-            }
+            registrarFeedbackLocal("$line · $selected: $description")
+            send.isEnabled = true
+            Toast.makeText(this, "Relato salvo neste aparelho.", Toast.LENGTH_SHORT).show()
+            dialog.dismiss()
         }
         dialog.show()
     }
@@ -1535,78 +1553,51 @@ MainActivity : AppCompatActivity(), SensorEventListener {
         textoFeedbacksPassageiros.text = feedbacksDoTrajeto.first()
     }
 
-    private fun carregarDadosRemotos() {
-        if (!transitRepository.isConfigured) return
-        transitRepository.loadBuses { buses, error ->
-            runOnUiThread {
-                if (!error.isNullOrBlank()) Log.w("SPBus", "Falha ao carregar frota: $error")
-                if (buses.isNotEmpty()) {
-                    onibusAoVivo.clear()
-                    buses.forEach { onibusAoVivo[it.id] = it; atualizarMarcadorOnibus(it) }
-                    textoStatus.text = "Frota conectada · ${buses.size} veículos recebidos."
+    private fun selecionarLinha(codigoLinha: Int) {
+        linhaSelecionadaCodigo = codigoLinha
+        rotaEmAndamento = listaRotas.firstOrNull { it.codigoLinhaSPTrans == codigoLinha }
+        monitoramentoVeiculosRunnable?.let(handler::removeCallbacks)
+        marcadoresOnibus.values.forEach(mapView.overlays::remove)
+        marcadoresOnibus.clear()
+
+        val poller = object : Runnable {
+            override fun run() {
+                if (!screenResumed || linhaSelecionadaCodigo != codigoLinha) return
+                spTransService.vehiclesForLine(codigoLinha) { vehicles, error ->
+                    runOnUiThread {
+                        if (!error.isNullOrBlank()) {
+                            textoStatus.text = "SPTrans: $error"
+                        } else {
+                            veiculosDaLinha = vehicles.orEmpty()
+                            atualizarMarcadoresVeiculos(veiculosDaLinha)
+                            textoStatus.text = if (veiculosDaLinha.isEmpty()) {
+                                "Linha ${rotaEmAndamento?.numeroLinha}: sem veículos reportando posição agora."
+                            } else {
+                                "Linha ${rotaEmAndamento?.numeroLinha} · ${veiculosDaLinha.size} veículos ao vivo."
+                            }
+                        }
+                        if (screenResumed && linhaSelecionadaCodigo == codigoLinha) handler.postDelayed(this, 20_000)
+                    }
                 }
             }
         }
-        transitRepository.loadFeedback { feedbacks, error ->
-            runOnUiThread {
-                if (!error.isNullOrBlank()) Log.w("SPBus", "Falha ao carregar relatos: $error")
-                if (feedbacks.isNotEmpty()) aplicarFeedbacksRemotos(feedbacks)
-            }
-        }
-        transitRepository.loadBusStops { stops, error ->
-            if (!error.isNullOrBlank()) Log.w("SPBus", "Falha ao carregar pontos: $error")
-            runOnUiThread { paradasOnibusAoVivo = stops }
-            Log.i("SPBus", "${stops.size} pontos de ônibus carregados")
-        }
+        monitoramentoVeiculosRunnable = poller
+        poller.run()
     }
 
-    private fun aplicarFeedbacksRemotos(feedbacks: List<PassengerFeedback>) {
-        feedbacksRemotos.clear()
-        feedbacksRemotos.addAll(feedbacks)
-        feedbacksDoTrajeto.clear()
-        feedbacksDoTrajeto.addAll(feedbacks.map { "${it.lineCode} · ${it.status}: ${it.comment}" })
-        cardFeedbacksRota.visibility = if (feedbacksDoTrajeto.isEmpty()) View.GONE else View.VISIBLE
-        textoFeedbacksPassageiros.text = feedbacksDoTrajeto.firstOrNull().orEmpty()
-    }
-
-    private fun iniciarRealtime() {
-        if (!transitRepository.isConfigured || realtimeClient != null) return
-        realtimeClient = transitRepository.connectRealtime(object : SupabaseRealtimeListener {
-            override fun onBusChanged(bus: BusPosition?, deletedId: String?) {
-                if (deletedId != null) {
-                    onibusAoVivo.remove(deletedId)
-                    marcadoresOnibus.remove(deletedId)?.let(mapView.overlays::remove)
-                    mapView.invalidate()
-                }
-                bus?.let { onibusAoVivo[it.id] = it; atualizarMarcadorOnibus(it) }
+    private fun atualizarMarcadoresVeiculos(vehicles: List<SpTransVehicle>) {
+        marcadoresOnibus.values.forEach(mapView.overlays::remove)
+        marcadoresOnibus.clear()
+        for (vehicle in vehicles) {
+            val marker = Marker(mapView).apply {
+                position = GeoPoint(vehicle.latitude, vehicle.longitude)
+                title = "🚌 Linha ${rotaEmAndamento?.numeroLinha ?: "SPTrans"} · ${vehicle.prefix}"
+                snippet = if (vehicle.accessible) "Acessível · atualização ${vehicle.updatedAt}" else "Atualização ${vehicle.updatedAt}"
+                setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
             }
-
-            override fun onFeedbackChanged(feedback: PassengerFeedback?, deletedId: String?) {
-                if (deletedId != null) feedbacksRemotos.removeAll { it.id == deletedId }
-                feedback?.let { item ->
-                    feedbacksRemotos.removeAll { it.id == item.id }
-                    feedbacksRemotos.add(0, item)
-                }
-                aplicarFeedbacksRemotos(feedbacksRemotos.take(20))
-            }
-
-            override fun onConnectionChanged(connected: Boolean) {
-                runOnUiThread {
-                    if (connected) textoStatus.text = "Frota e relatos conectados em tempo real."
-                }
-            }
-        })
-    }
-
-    private fun atualizarMarcadorOnibus(bus: BusPosition) {
-        val marker = marcadoresOnibus[bus.id] ?: Marker(mapView).also {
-            it.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_CENTER)
-            mapView.overlays.add(it)
-            marcadoresOnibus[bus.id] = it
+            mapView.overlays.add(marker)
+            marcadoresOnibus[vehicle.prefix] = marker
         }
-        marker.position = GeoPoint(bus.latitude, bus.longitude)
-        marker.title = "🚌 Linha ${bus.lineCode}"
-        marker.snippet = "${bus.speedKmh.toInt()} km/h · atualizado ${bus.updatedAt}"
         mapView.invalidate()
     }
 
@@ -1626,33 +1617,39 @@ MainActivity : AppCompatActivity(), SensorEventListener {
     }
 
     override fun onSensorChanged(event: SensorEvent?) {
-        if (event?.sensor?.type == Sensor.TYPE_ACCELEROMETER) {
-            val x = event.values[0]
-            val y = event.values[1]
-            val z = event.values[2]
-
-            aceleracaoAnterior = aceleracaoAtual
-            aceleracaoAtual = sqrt((x * x + y * y + z * z).toDouble()).toFloat()
-            val delta = aceleracaoAtual - aceleracaoAnterior
-            ultimoVetorAceleracao = ultimoVetorAceleracao * 0.9f + delta
+        val sensorEvent = event ?: return
+        when (sensorEvent.sensor.type) {
+            Sensor.TYPE_STEP_COUNTER -> walkingDistanceTracker.recordCumulativeSensorSteps(sensorEvent.values.firstOrNull()?.toLong() ?: return)
+            Sensor.TYPE_STEP_DETECTOR -> walkingDistanceTracker.recordDetectedSteps(sensorEvent.values.firstOrNull()?.toInt() ?: 1)
+            Sensor.TYPE_ACCELEROMETER -> {
+                if (contadorPassosSensor == null && detectorPassosSensor == null) {
+                    walkingDistanceTracker.recordAccelerometer(
+                        sensorEvent.values[0], sensorEvent.values[1], sensorEvent.values[2], sensorEvent.timestamp / 1_000_000L
+                    )
+                }
+            }
         }
+        atualizarDistanciaHoje()
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
 
     override fun onResume() {
         super.onResume()
+        screenResumed = true
         mapView.onResume()
-        carregarDadosRemotos()
-        iniciarRealtime()
-        acelerometro?.let {
-            sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
-        }
+        contadorPassosSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        if (contadorPassosSensor == null) detectorPassosSensor?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL) }
+        if (contadorPassosSensor == null && detectorPassosSensor == null) acelerometro?.let { sensorManager.registerListener(this, it, SensorManager.SENSOR_DELAY_UI) }
+        linhaSelecionadaCodigo?.let(::selecionarLinha)
+        atualizarDistanciaHoje()
     }
 
     override fun onPause() {
-        realtimeClient?.close()
-        realtimeClient = null
+        screenResumed = false
+        monitoramentoVeiculosRunnable?.let(handler::removeCallbacks)
+        walkingDistanceTracker.persist()
+        enviarDistanciaThingSpeak()
         super.onPause()
         mapView.onPause()
         sensorManager.unregisterListener(this)

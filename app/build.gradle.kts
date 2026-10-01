@@ -1,7 +1,7 @@
 import java.util.Properties
 
 val spbusSecrets = Properties().apply {
-    rootProject.file("secrets.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
+    rootProject.file("local.properties").takeIf { it.exists() }?.inputStream()?.use { load(it) }
 }
 
 fun spbusSecret(name: String): String = spbusSecrets.getProperty(name, "").trim()
@@ -25,11 +25,10 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        buildConfigField("String", "SUPABASE_URL", buildConfigString(spbusSecret("SUPABASE_URL")))
-        buildConfigField("String", "SUPABASE_ANON_KEY", buildConfigString(spbusSecret("SUPABASE_ANON_KEY")))
-        buildConfigField("String", "GEMINI_API_KEY", buildConfigString(spbusSecret("GEMINI_API_KEY")))
-        buildConfigField("String", "THINGSPEAK_CHANNEL_ID", buildConfigString(spbusSecret("THINGSPEAK_CHANNEL_ID")))
-        buildConfigField("String", "THINGSPEAK_READ_API_KEY", buildConfigString(spbusSecret("THINGSPEAK_READ_API_KEY")))
+        buildConfigField("String", "SPTRANS_TOKEN", buildConfigString(spbusSecret("sptrans.token")))
+        buildConfigField("String", "THINGSPEAK_CHANNEL_ID", buildConfigString(spbusSecret("thingspeak.channel_id")))
+        buildConfigField("String", "THINGSPEAK_READ_API_KEY", buildConfigString(spbusSecret("thingspeak.read_api_key")))
+        buildConfigField("String", "THINGSPEAK_WRITE_API_KEY", buildConfigString(spbusSecret("thingspeak.write_api_key")))
     }
 
     buildTypes {
