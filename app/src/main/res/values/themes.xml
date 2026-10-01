@@ -1,8 +1,12 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
-    <style name="Base.Theme.SPBus" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your light theme here. -->
-        <!-- <item name="colorPrimary">@color/my_light_primary</item> -->
+    <style name="Base.Theme.SPBus" parent="Theme.Material3.Light.NoActionBar">
+        <item name="colorPrimary">@color/spbus_primary</item>
+        <item name="colorSecondary">@color/spbus_accent</item>
+        <item name="android:statusBarColor">@color/spbus_primary_dark</item>
+        <item name="android:navigationBarColor">@color/spbus_ink</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowBackground">@color/spbus_surface</item>
     </style>
 
     <style name="Theme.SPBus" parent="Base.Theme.SPBus" />

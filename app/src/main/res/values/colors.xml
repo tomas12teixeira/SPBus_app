@@ -2,4 +2,10 @@
 <resources>
     <color name="black">#FF000000</color>
     <color name="white">#FFFFFFFF</color>
+    <color name="spbus_primary">#176B58</color>
+    <color name="spbus_primary_dark">#10483D</color>
+    <color name="spbus_surface">#F4F6F2</color>
+    <color name="spbus_ink">#172521</color>
+    <color name="spbus_muted">#64736D</color>
+    <color name="spbus_accent">#E5784B</color>
 </resources>
