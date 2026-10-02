@@ -23,6 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -128,10 +129,8 @@ fun SpBusApp(
         val navController = rememberNavController()
         val planner: RoutePlannerViewModel = viewModel(factory = RoutePlannerViewModel.Factory(routeFinder, spTrans))
         val tabs = listOf(
-            AppTab("home", "Mapa"),
-            AppTab("favorites", "Salvos"),
-            AppTab("iot", "IoT"),
-            AppTab("assistant", "Ajuda"),
+            AppTab("home", "Rotas"),
+            AppTab("iot", "Dados"),
             AppTab("profile", "Perfil")
         )
         val entry by navController.currentBackStackEntryAsState()
@@ -149,7 +148,8 @@ fun SpBusApp(
                 NavigationBar(containerColor = Color.White) {
                     tabs.forEach { tab ->
                         NavigationBarItem(
-                            selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true,
+                            selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true ||
+                                (tab.route == "home" && currentDestination?.route in setOf("favorites", "assistant")),
                             onClick = {
                                 navController.navigate(tab.route) {
                                     popUpTo(navController.graph.startDestinationId) { saveState = true }
@@ -157,7 +157,13 @@ fun SpBusApp(
                                     restoreState = true
                                 }
                             },
-                            icon = {},
+                            icon = {
+                                Text(when (tab.route) {
+                                    "home" -> "⌖"
+                                    "iot" -> "▤"
+                                    else -> "●"
+                                })
+                            },
                             label = { Text(tab.label) }
                         )
                     }
@@ -170,7 +176,12 @@ fun SpBusApp(
                 modifier = Modifier.padding(padding)
             ) {
                 composable("home") {
-                    HomeScreen(planner, routeStore)
+                    HomeScreen(
+                        planner,
+                        routeStore,
+                        onOpenSaved = { navController.navigate("favorites") },
+                        onOpenAssistant = { navController.navigate("assistant") }
+                    )
                 }
                 composable("favorites") {
                     SavedRoutesScreen(routeStore)
@@ -181,12 +192,7 @@ fun SpBusApp(
                 composable("assistant") {
                     AssistantScreen(planner)
                 }
-                composable("profile") {
-                    ProfileScreen(routeStore) { navController.navigate("feedback") }
-                }
-                composable("feedback") {
-                    FeedbackEntryScreen(routeStore)
-                }
+                composable("profile") { ProfileScreen(routeStore) }
             }
         }
     }
@@ -311,12 +317,18 @@ class RoutePlannerViewModel(private val finder: TransitRouteFinder, private val 
 }
 
 @Composable
-private fun HomeScreen(viewModel: RoutePlannerViewModel, routeStore: FirebaseRouteStore) {
+private fun HomeScreen(
+    viewModel: RoutePlannerViewModel,
+    routeStore: FirebaseRouteStore,
+    onOpenSaved: () -> Unit,
+    onOpenAssistant: () -> Unit
+) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val lifecycleOwner = LocalLifecycleOwner.current
     var origin by remember { mutableStateOf("") }
     var destination by remember { mutableStateOf("") }
     var saveStatus by remember { mutableStateOf("") }
+    var feedbackRoute by remember { mutableStateOf<TransitRoute?>(null) }
     var locationMessage by remember { mutableStateOf("") }
     var userLocation by remember { mutableStateOf<GeoPoint?>(null) }
     var searchLocation by remember { mutableStateOf<GeoPoint?>(null) }
@@ -376,7 +388,7 @@ private fun HomeScreen(viewModel: RoutePlannerViewModel, routeStore: FirebaseRou
         destinationSuggestions = emptyList()
         val selectedQuery = if (isOrigin) selectedOriginQuery else selectedDestinationQuery
         if (query != selectedQuery && query.trim().length >= 3) {
-            delay(1_100)
+            delay(1_000)
             nominatim.searchAddress(query) { suggestions, error ->
                 mainHandler.post {
                     val current = if (activeSearch == "origin") origin else destination
@@ -389,51 +401,66 @@ private fun HomeScreen(viewModel: RoutePlannerViewModel, routeStore: FirebaseRou
         }
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-        Text("ROTAS DE ÔNIBUS · SÃO PAULO", style = MaterialTheme.typography.labelMedium, color = appMuted)
-        Spacer(Modifier.height(8.dp))
-        TransitMap(state.selectedRoute, userLocation, searchLocation, state.vehicles)
-        TextButton(onClick = locate) { Text("Usar minha localização") }
-        if (locationMessage.isNotBlank()) Text(locationMessage, color = appMuted)
-        Spacer(Modifier.height(14.dp))
-        Text("Planeje sua viagem", style = MaterialTheme.typography.titleLarge, color = appInk)
-        OutlinedTextField(
-            value = origin,
-            onValueChange = { activeSearch = "origin"; selectedOriginQuery = ""; origin = it },
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            singleLine = true,
-            label = { Text("Origem ou ponto de partida") }
-        )
-        originSuggestions.forEach { suggestion ->
-            TextButton(onClick = {
-                selectedOriginQuery = suggestion.displayName
-                origin = suggestion.displayName
-                searchLocation = GeoPoint(suggestion.latitude, suggestion.longitude)
-                originSuggestions = emptyList()
-            }, modifier = Modifier.fillMaxWidth()) {
-                Text(suggestion.displayName, color = appInk, maxLines = 2)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = androidx.compose.ui.Alignment.CenterVertically
+        ) {
+            Column {
+                Text("SPBUS · SÃO PAULO", style = MaterialTheme.typography.labelMedium, color = appMuted)
+                Text("Planeje sua viagem", style = MaterialTheme.typography.titleLarge, color = appInk)
+            }
+            Row {
+                TextButton(onClick = onOpenSaved) { Text("Salvos") }
+                TextButton(onClick = onOpenAssistant) { Text("Ajuda") }
             }
         }
-        OutlinedTextField(
-            value = destination,
-            onValueChange = { activeSearch = "destination"; selectedDestinationQuery = ""; destination = it },
-            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-            singleLine = true,
-            label = { Text("Destino ou ponto de chegada") }
-        )
-        destinationSuggestions.forEach { suggestion ->
-            TextButton(onClick = {
-                selectedDestinationQuery = suggestion.displayName
-                destination = suggestion.displayName
-                searchLocation = GeoPoint(suggestion.latitude, suggestion.longitude)
-                destinationSuggestions = emptyList()
-            }, modifier = Modifier.fillMaxWidth()) {
-                Text(suggestion.displayName, color = appInk, maxLines = 2)
+        Spacer(Modifier.height(8.dp))
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(10.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White)
+        ) {
+            Column(Modifier.padding(14.dp)) {
+                OutlinedTextField(
+                    value = origin,
+                    onValueChange = { activeSearch = "origin"; selectedOriginQuery = ""; origin = it },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    label = { Text("Origem") },
+                    supportingText = { if (origin.isBlank()) Text("Rua, endereço ou ponto de ônibus") }
+                )
+                AddressSuggestionList(originSuggestions) { suggestion ->
+                    selectedOriginQuery = suggestion.displayName
+                    origin = suggestion.displayName
+                    searchLocation = GeoPoint(suggestion.latitude, suggestion.longitude)
+                    originSuggestions = emptyList()
+                }
+                OutlinedTextField(
+                    value = destination,
+                    onValueChange = { activeSearch = "destination"; selectedDestinationQuery = ""; destination = it },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    singleLine = true,
+                    label = { Text("Destino") },
+                    supportingText = { if (destination.isBlank()) Text("Rua, endereço ou ponto de ônibus") }
+                )
+                AddressSuggestionList(destinationSuggestions) { suggestion ->
+                    selectedDestinationQuery = suggestion.displayName
+                    destination = suggestion.displayName
+                    searchLocation = GeoPoint(suggestion.latitude, suggestion.longitude)
+                    destinationSuggestions = emptyList()
+                }
+                TextButton(onClick = locate) { Text("Usar minha localização atual") }
+                if (locationMessage.isNotBlank()) {
+                    Text(locationMessage, color = appMuted, style = MaterialTheme.typography.bodySmall)
+                }
             }
         }
         Button(
             onClick = { viewModel.search(origin, destination) },
             enabled = !state.isLoading,
-            modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+            modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+            shape = RoundedCornerShape(8.dp)
         ) {
             Text("Buscar rotas de ônibus")
         }
@@ -441,6 +468,10 @@ private fun HomeScreen(viewModel: RoutePlannerViewModel, routeStore: FirebaseRou
         Text(state.status, style = MaterialTheme.typography.bodyMedium, color = appMuted, modifier = Modifier.padding(vertical = 12.dp))
         if (state.arrival.isNotBlank()) Text(state.arrival, color = busGreen, style = MaterialTheme.typography.titleSmall)
         if (state.vehicleStatus.isNotBlank()) Text(state.vehicleStatus, color = appMuted, style = MaterialTheme.typography.bodySmall)
+        if (state.selectedRoute != null || userLocation != null || searchLocation != null) {
+            Spacer(Modifier.height(8.dp))
+            TransitMap(state.selectedRoute, userLocation, searchLocation, state.vehicles)
+        }
         state.routes.forEach { route ->
             Card(
                 onClick = { viewModel.select(route) },
@@ -456,22 +487,55 @@ private fun HomeScreen(viewModel: RoutePlannerViewModel, routeStore: FirebaseRou
                     Text(route.line.destination.ifBlank { route.alightingStop.name }, color = appInk)
                     Text("Embarque · ${route.boardingStop.name}", style = MaterialTheme.typography.bodySmall, color = appMuted)
                     Text("Desembarque · ${route.alightingStop.name}", style = MaterialTheme.typography.bodySmall, color = appMuted)
-                    Row {
-                        TextButton(onClick = {
-                            routeStore.saveFavoriteLine(route.line.number) { error ->
-                                Handler(Looper.getMainLooper()).post { saveStatus = error ?: "Linha salva nos favoritos." }
-                            }
-                        }) { Text("Favoritar linha") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         TextButton(onClick = {
                             routeStore.saveRoute(origin, destination, route.line.number, favorite = true) { error ->
                                 Handler(Looper.getMainLooper()).post { saveStatus = error ?: "Rota salva nos favoritos." }
                             }
                         }) { Text("Salvar rota") }
+                        TextButton(onClick = { feedbackRoute = route }) { Text("Relatar") }
                     }
                 }
             }
         }
         if (saveStatus.isNotBlank()) Text(saveStatus, color = appMuted)
+    }
+    feedbackRoute?.let { route ->
+        FeedbackEntryDialog(
+            store = routeStore,
+            lineNumber = route.line.number,
+            onDismiss = { feedbackRoute = null }
+        )
+    }
+}
+
+@Composable
+private fun AddressSuggestionList(
+    suggestions: List<AddressSuggestion>,
+    onSelect: (AddressSuggestion) -> Unit
+) {
+    if (suggestions.isEmpty()) return
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFF7F9F6))
+    ) {
+        Column {
+            suggestions.forEachIndexed { index, suggestion ->
+                TextButton(
+                    onClick = { onSelect(suggestion) },
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp)
+                ) {
+                    Text(
+                        suggestion.displayName,
+                        modifier = Modifier.fillMaxWidth(),
+                        color = appInk,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 2
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -765,7 +829,7 @@ private fun AssistantScreen(viewModel: RoutePlannerViewModel) {
 private data class ChatMessage(val fromUser: Boolean, val text: String)
 
 @Composable
-private fun ProfileScreen(store: FirebaseRouteStore, onFeedback: () -> Unit) {
+private fun ProfileScreen(store: FirebaseRouteStore) {
     var email by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var accountEmail by remember { mutableStateOf(store.accountEmail.orEmpty()) }
@@ -833,54 +897,62 @@ private fun ProfileScreen(store: FirebaseRouteStore, onFeedback: () -> Unit) {
         }
         if (processing) CircularProgressIndicator()
         if (status.isNotBlank()) Text(status, color = appMuted)
-        Button(onClick = onFeedback) { Text("Enviar relato") }
     }
 }
 
 @Composable
-private fun FeedbackEntryScreen(store: FirebaseRouteStore) {
-    var line by remember { mutableStateOf("") }
+private fun FeedbackEntryDialog(store: FirebaseRouteStore, lineNumber: String, onDismiss: () -> Unit) {
     var comment by remember { mutableStateOf("") }
     var category by remember { mutableStateOf("Lotado") }
     var status by remember { mutableStateOf(if (store.isConfigured) "Relato associado à sua sessão Firebase." else "Adicione a configuração Firebase para enviar relatos.") }
     var sending by remember { mutableStateOf(false) }
     val categories = listOf("Lotado", "Atrasado", "Normal", "Vazio", "Problema no veículo", "Outro")
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp)) {
-        Text("Relato do passageiro", style = MaterialTheme.typography.headlineSmall, color = appInk)
-        OutlinedTextField(line, { line = it }, modifier = Modifier.fillMaxWidth().padding(top = 10.dp), label = { Text("Linha") }, singleLine = true)
-        Text("Categoria", modifier = Modifier.padding(top = 12.dp), color = appMuted)
-        Column(Modifier.heightIn(max = 220.dp).verticalScroll(rememberScrollState())) {
-            categories.forEach { option ->
-                FilterChip(
-                    selected = category == option,
-                    onClick = { category = option },
-                    label = { Text(option) },
-                    modifier = Modifier.padding(vertical = 3.dp)
-                )
-            }
-        }
-        OutlinedTextField(comment, { comment = it }, modifier = Modifier.fillMaxWidth().padding(top = 8.dp), label = { Text("Comentário (máximo 500 caracteres)") }, minLines = 3)
-        Text(status, color = appMuted, modifier = Modifier.padding(vertical = 10.dp))
-        Button(onClick = {
-            if (!store.isConfigured) {
-                status = "Adicione google-services.json e habilite autenticação no Firebase Console."
-            } else if (comment.isBlank()) {
-                status = "Escreva um comentário antes de enviar."
-            } else if (comment.length > 500) {
-                status = "O comentário deve ter no máximo 500 caracteres."
-            } else {
-                sending = true
-                status = "Enviando relato..."
-                store.saveFeedback(line, category, comment) { error ->
-                    Handler(Looper.getMainLooper()).post {
-                        sending = false
-                        status = error ?: "Relato enviado com sucesso."
-                        if (error == null) comment = ""
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Relatar linha $lineNumber") },
+        text = {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                Text("Como está esta linha agora?", color = appMuted)
+                Column(Modifier.padding(top = 8.dp)) {
+                    categories.forEach { option ->
+                        FilterChip(
+                            selected = category == option,
+                            onClick = { category = option },
+                            label = { Text(option) },
+                            modifier = Modifier.padding(vertical = 2.dp)
+                        )
                     }
                 }
+                OutlinedTextField(
+                    value = comment,
+                    onValueChange = { comment = it.take(500) },
+                    modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                    label = { Text("Comentário") },
+                    supportingText = { Text("${comment.length}/500") },
+                    minLines = 3
+                )
+                Text(status, color = appMuted, modifier = Modifier.padding(top = 8.dp))
             }
-        }, enabled = !sending, modifier = Modifier.fillMaxWidth()) {
-            Text(if (sending) "Enviando..." else "Enviar relato")
-        }
-    }
+        },
+        confirmButton = {
+            TextButton(enabled = !sending, onClick = {
+                when {
+                    !store.isConfigured -> status = "Adicione google-services.json e habilite autenticação no Firebase Console."
+                    comment.isBlank() -> status = "Escreva um comentário antes de enviar."
+                    else -> {
+                        sending = true
+                        status = "Enviando relato..."
+                        store.saveFeedback(lineNumber, category, comment) { error ->
+                            Handler(Looper.getMainLooper()).post {
+                                sending = false
+                                status = error ?: "Relato enviado com sucesso."
+                                if (error == null) comment = ""
+                            }
+                        }
+                    }
+                }
+            }) { Text(if (sending) "Enviando..." else "Enviar relato") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Fechar") } }
+    )
 }
